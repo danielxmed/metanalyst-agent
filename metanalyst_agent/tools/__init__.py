@@ -27,13 +27,15 @@ from .vectorization_tools import (
     create_text_chunks,
     generate_embeddings,
     store_in_vector_db,
-    setup_vector_store
+    setup_vector_store,
+    load_vector_store
 )
 
 from .retrieval_tools import (
     search_vector_store,
     retrieve_relevant_chunks,
-    rank_by_relevance
+    rank_by_relevance,
+    extract_key_information
 )
 
 from .analysis_tools import (
@@ -86,11 +88,13 @@ __all__ = [
     "generate_embeddings",
     "store_in_vector_db",
     "setup_vector_store",
+    "load_vector_store",
     
     # Retrieval tools
     "search_vector_store",
     "retrieve_relevant_chunks",
     "rank_by_relevance",
+    "extract_key_information",
     
     # Analysis tools
     "calculate_meta_analysis",
