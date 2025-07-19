@@ -280,9 +280,7 @@ O sistema segue rigorosamente:
 
 ## 🤝 Suporte
 
-- 📧 Email: suporte@nobregamedtech.com
-- 🐛 Issues: [GitHub Issues](https://github.com/nobregamedtech/metanalyst-agent/issues)
-- 📖 Docs: [Documentação Completa](https://docs.nobregamedtech.com/metanalyst-agent)
+- 📧 Email: daniel@nobregamedtech.com.br
 
 ## 📄 Licença
 
