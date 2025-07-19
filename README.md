@@ -1,209 +1,305 @@
-# MetAnalyst Agent
+# 🤖 Metanalyst-Agent
 
-Sistema multi-agente autônomo para geração automatizada de meta-análises médicas usando LangGraph e LLMs.
+O **primeiro projeto open-source da Nobrega Medtech** para **meta-análises automatizadas** usando Python e LangGraph. Sistema multi-agente autônomo que realiza o processo completo de meta-análise médica seguindo diretrizes PRISMA.
 
-## 🏗️ Arquitetura
+## 🎯 Visão Geral
 
-Sistema hub-and-spoke com agentes verdadeiramente autônomos:
+O Metanalyst-Agent implementa uma arquitetura **hub-and-spoke** com agentes especializados que trabalham de forma autônoma para produzir meta-análises de alta qualidade científica, desde a busca de literatura até a geração de relatórios finais formatados.
+
+### ✨ Características Principais
+
+- 🧠 **Agentes Autônomos**: Cada agente decide autonomamente quais ferramentas usar via `create_react_agent`
+- 🏥 **AI-First Approach**: LLMs são usados em todas as etapas possíveis do processo
+- 📊 **Diretrizes PRISMA**: Aderência completa às diretrizes internacionais
+- 🔄 **Arquitetura Hub-and-Spoke**: Supervisor central coordena agentes especializados
+- 💾 **Persistência Inteligente**: Estado compartilhado com checkpointers e stores
+- 🌐 **Bases Médicas**: Integração com PubMed, Cochrane, NEJM, JAMA, Lancet, BMJ
+
+## 🏗️ Arquitetura do Sistema
 
 ```
                     RESEARCHER
                          │
                          │
-            EDITOR ──────┼────── PROCESSOR  
+            EDITOR ──────┼────── PROCESSOR
                 │        │        │
                 │        │        │
-    ANALYST ───┼────────●────────┼─── RETRIEVER
+    ANALYST ───┼────────●────────┼─── VECTORIZER
                 │   SUPERVISOR    │
                 │        │        │
                 │        │        │
-           REVIEWER ──────┼────── WRITER
+           REVIEWER ──────┼────── RETRIEVER
                          │
                          │
-                     VECTORIZER
+                     WRITER
 
-    ● = Supervisor Agent (Hub)
-    │ = Handoff Tools (Agents-as-a-Tool)
+    ● = Supervisor (Hub Central)
+    │ = Comunicação via Handoff Tools
 ```
 
-### Agentes Autônomos
+### 🤖 Agentes Especializados
 
-- **Supervisor**: Coordena e delega tarefas usando handoff tools
-- **Researcher**: Busca literatura usando Tavily com domínios médicos específicos
-- **Processor**: Extrai conteúdo e dados estatísticos dos artigos
-- **Vectorizer**: Cria embeddings e gerencia vector store
-- **Retriever**: Busca informações relevantes no vector store
-- **Analyst**: Realiza análises estatísticas e gera visualizações
-- **Writer**: Gera relatórios estruturados em HTML
-- **Reviewer**: Revisa qualidade e sugere melhorias
-- **Editor**: Finaliza e formata o documento
+| Agente | Responsabilidade | Ferramentas Principais |
+|--------|------------------|------------------------|
+| **Supervisor** | Coordenação central e tomada de decisões | Handoff tools para todos os agentes |
+| **Researcher** | Busca sistemática de literatura | Tavily Search, geração de queries PICO |
+| **Processor** | Extração e processamento de artigos | Tavily Extract, LLM para dados estatísticos |
+| **Vectorizer** | Vetorização para busca semântica | OpenAI Embeddings, FAISS |
+| **Retriever** | Recuperação inteligente de informações | Busca semântica, ranking por LLM |
+| **Analyst** | Análise estatística e visualizações | Meta-análise, forest plots, heterogeneidade |
+| **Writer** | Geração de relatórios PRISMA | Seções estruturadas, formatação HTML |
+| **Reviewer** | Controle de qualidade científica | Avaliação de qualidade, validação estatística |
+| **Editor** | Formatação final profissional | HTML/CSS científico, múltiplos formatos |
 
-## 🚀 Setup Rápido
+## 🚀 Instalação
 
-### 1. Configurar PostgreSQL
+### Pré-requisitos
 
-```bash
-# Iniciar PostgreSQL com Docker
-docker run --name metanalyst-postgres \
-  -e POSTGRES_PASSWORD=metanalyst123 \
-  -e POSTGRES_USER=metanalyst \
-  -e POSTGRES_DB=metanalyst \
-  -p 5432:5432 \
-  -d postgres:15
+- Python 3.9+
+- PostgreSQL (opcional, para persistência)
+- Chaves de API: OpenAI, Tavily
 
-# Aguardar inicialização
-sleep 10
-
-# Criar tabelas do LangGraph
-python -c "
-from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.store.postgres import PostgresStore
-import asyncio
-
-async def setup_db():
-    DB_URI = 'postgresql://metanalyst:metanalyst123@localhost:5432/metanalyst'
-    
-    # Setup checkpointer tables
-    async with PostgresSaver.from_conn_string(DB_URI) as checkpointer:
-        await checkpointer.setup()
-    
-    # Setup store tables  
-    async with PostgresStore.from_conn_string(DB_URI) as store:
-        await store.setup()
-    
-    print('Database setup complete!')
-
-asyncio.run(setup_db())
-"
-```
-
-### 2. Instalar Dependências
+### Instalação via pip
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configurar Variáveis de Ambiente
+### Configuração de Variáveis de Ambiente
 
 ```bash
-cp .env.example .env
-# Editar .env com suas chaves de API
+# APIs obrigatórias
+export OPENAI_API_KEY="sua_chave_openai"
+export TAVILY_API_KEY="sua_chave_tavily"
+
+# PostgreSQL (opcional)
+export POSTGRES_URL="postgresql://user:pass@localhost:5432/metanalysis"
 ```
 
-### 4. Executar
+## 📖 Uso
 
-```python
-from metanalyst_agent import MetAnalystGraph
-
-# Criar e executar meta-análise
-graph = MetAnalystGraph()
-result = graph.run_meta_analysis(
-    "Eficácia da meditação mindfulness versus terapia cognitivo-comportamental para ansiedade"
-)
-```
-
-## 🔧 Configuração
-
-### Variáveis de Ambiente Obrigatórias
-
-```env
-# APIs LLM (pelo menos uma)
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Tavily Search
-TAVILY_API_KEY=tvly-...
-
-# Database
-DATABASE_URL=postgresql://metanalyst:metanalyst123@localhost:5432/metanalyst
-```
-
-## 📊 Domínios de Pesquisa
-
-O sistema busca literatura nos seguintes domínios de alta qualidade:
-
-- **Periódicos de Alto Impacto**: NEJM, JAMA, The Lancet, BMJ
-- **Bases Científicas**: PubMed, PMC, SciELO
-- **Bibliotecas Especializadas**: Cochrane Library
-
-## 🎯 Funcionalidades
-
-- ✅ Busca automatizada de literatura médica
-- ✅ Extração de dados estatísticos
-- ✅ Análise de meta-análise com forest plots
-- ✅ Avaliação de heterogeneidade (I²)
-- ✅ Relatórios HTML com citações Vancouver
-- ✅ Memória persistente entre sessões
-- ✅ Sistema de qualidade e revisão
-
-## 📈 Exemplo de Uso
-
-```python
-import asyncio
-from metanalyst_agent import create_meta_analysis_system
-
-async def main():
-    # Criar sistema
-    system = create_meta_analysis_system()
-    
-    # Executar meta-análise
-    config = {"configurable": {"thread_id": "analysis_001"}}
-    
-    async for chunk in system.astream(
-        {
-            "messages": [{
-                "role": "user", 
-                "content": "Meta-análise sobre estatinas na prevenção cardiovascular"
-            }]
-        },
-        config
-    ):
-        print(f"[{chunk.get('current_agent', 'system')}]: {chunk['messages'][-1].content[:100]}...")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-## 🔍 Monitoramento
-
-O sistema registra todas as transições entre agentes e decisões tomadas:
-
-```python
-# Visualizar histórico de execução
-history = system.get_execution_history(thread_id="analysis_001")
-for step in history:
-    print(f"{step.timestamp}: {step.from_agent} → {step.to_agent}")
-    print(f"Razão: {step.reason}")
-```
-
-## 🧪 Testes
+### Execução via Linha de Comando
 
 ```bash
-# Executar testes
-pytest tests/ -v
+# Executar meta-análise
+python -m metanalyst_agent "Eficácia da metformina vs placebo para prevenção de diabetes tipo 2"
 
-# Teste específico de agente
-pytest tests/test_researcher_agent.py -v
+# Mostrar exemplos
+python -m metanalyst_agent --examples
+
+# Visualizar grafo
+python -m metanalyst_agent --visualize
+
+# Modo desenvolvimento (memória)
+python -m metanalyst_agent --memory "Sua query aqui"
 ```
 
-## 📚 Documentação
+### Execução via Python
 
-- [Guia de Agentes](docs/agents.md)
-- [API Reference](docs/api.md)
-- [Exemplos](examples/)
+```python
+from metanalyst_agent import run_meta_analysis
 
-## 🤝 Contribuição
+query = """
+Realize uma meta-análise sobre a eficácia da meditação mindfulness 
+versus terapia cognitivo-comportamental para tratamento de ansiedade 
+em adultos. Inclua forest plot e análise de heterogeneidade.
+"""
 
-1. Fork o projeto
-2. Crie uma branch (`git checkout -b feature/nova-funcionalidade`)
-3. Commit suas mudanças (`git commit -am 'Adiciona nova funcionalidade'`)
-4. Push para a branch (`git push origin feature/nova-funcionalidade`)
-5. Abra um Pull Request
+for result in run_meta_analysis(query):
+    if result.get("final_report"):
+        print("✅ Meta-análise concluída!")
+        print(result["final_report"])
+        break
+```
+
+### Modo Interativo
+
+```bash
+python -m metanalyst_agent
+# Digite suas queries interativamente
+```
+
+## 🔧 Configuração Avançada
+
+### Personalizar Configurações
+
+```python
+from metanalyst_agent.models.config import config
+
+# Ajustar configurações
+config.search.max_results = 100
+config.search.min_relevance_score = 0.8
+```
+
+### Usar Persistência Customizada
+
+```python
+from metanalyst_agent import build_meta_analysis_graph
+from langgraph.checkpoint.memory import InMemorySaver
+
+checkpointer = InMemorySaver()
+graph = build_meta_analysis_graph(checkpointer=checkpointer)
+```
+
+## 📊 Exemplo de Fluxo Completo
+
+1. **Definição PICO**: Supervisor analisa query e define estrutura PICO
+2. **Busca de Literatura**: Researcher busca artigos em bases médicas
+3. **Processamento**: Processor extrai conteúdo e dados estatísticos
+4. **Vetorização**: Vectorizer cria embeddings para busca semântica
+5. **Recuperação**: Retriever busca informações relevantes
+6. **Análise**: Analyst realiza meta-análise e gera visualizações
+7. **Redação**: Writer gera relatório seguindo PRISMA
+8. **Revisão**: Reviewer avalia qualidade e sugere melhorias
+9. **Edição**: Editor produz versão final formatada
+
+## 🛠️ Ferramentas por Categoria
+
+### 🔍 Pesquisa e Coleta
+- `search_medical_literature`: Busca em bases médicas
+- `generate_search_queries`: Queries otimizadas PICO
+- `evaluate_article_relevance`: Avaliação de relevância
+
+### 🔄 Processamento
+- `extract_article_content`: Extração via Tavily
+- `extract_statistical_data`: Dados estatísticos via LLM
+- `assess_article_quality`: Avaliação metodológica
+
+### 🎯 Vetorização e Busca
+- `create_text_chunks`: Chunking inteligente
+- `generate_embeddings`: OpenAI embeddings
+- `retrieve_relevant_chunks`: Busca semântica
+
+### 📈 Análise Estatística
+- `calculate_meta_analysis`: Cálculos de meta-análise
+- `create_forest_plot`: Visualizações
+- `assess_heterogeneity`: Análise de heterogeneidade
+
+### ✍️ Geração de Relatórios
+- `generate_report_section`: Seções PRISMA
+- `format_html_report`: Formatação profissional
+- `assess_report_quality`: Controle de qualidade
+
+## 🔗 Handoff Tools
+
+Sistema de transferência inteligente entre agentes:
+
+```python
+transfer_to_researcher    # → Buscar mais literatura
+transfer_to_processor     # → Processar artigos encontrados  
+transfer_to_vectorizer    # → Criar vector store
+transfer_to_retriever     # → Buscar informações
+transfer_to_analyst       # → Análise estatística
+transfer_to_writer        # → Gerar relatório
+transfer_to_reviewer      # → Revisar qualidade
+transfer_to_editor        # → Formatação final
+```
+
+## 📋 Estado Compartilhado
+
+O sistema mantém estado completo da meta-análise:
+
+```python
+{
+    "meta_analysis_id": "uuid",
+    "current_phase": "analysis",
+    "pico": {"P": "...", "I": "...", "C": "...", "O": "..."},
+    "processed_articles": [...],
+    "statistical_analysis": {...},
+    "final_report": "...",
+    # ... e muito mais
+}
+```
+
+## 🔬 Exemplos de Queries
+
+### Meta-análise Farmacológica
+```
+Realize uma meta-análise sobre a eficácia da metformina versus placebo 
+para prevenção de diabetes tipo 2 em adultos com pré-diabetes. 
+Inclua análise de heterogeneidade e forest plot.
+```
+
+### Meta-análise Psicológica
+```
+Conduza uma meta-análise comparando terapia cognitivo-comportamental 
+versus mindfulness para tratamento de depressão em adultos. 
+Avalie qualidade da evidência e heterogeneidade.
+```
+
+### Meta-análise Cirúrgica
+```
+Faça uma meta-análise comparando cirurgia laparoscópica versus 
+cirurgia aberta para apendicectomia. Foque em tempo de recuperação 
+e complicações pós-operatórias.
+```
+
+## 🧪 Desenvolvimento
+
+### Estrutura do Projeto
+
+```
+metanalyst_agent/
+├── agents/           # Agentes autônomos
+├── tools/           # Ferramentas especializadas
+├── models/          # Estado e configuração
+├── graph/           # Grafo principal
+└── main.py         # Interface principal
+```
+
+### Executar Testes
+
+```bash
+pytest tests/
+```
+
+### Contribuir
+
+1. Fork o repositório
+2. Crie branch para feature (`git checkout -b feature/nova-feature`)
+3. Commit suas mudanças (`git commit -am 'Adiciona nova feature'`)
+4. Push para branch (`git push origin feature/nova-feature`)
+5. Abra Pull Request
+
+## 🏥 Diretrizes Médicas
+
+O sistema segue rigorosamente:
+
+- **PRISMA**: Preferred Reporting Items for Systematic Reviews and Meta-Analyses
+- **Cochrane**: Métodos de meta-análise
+- **GRADE**: Avaliação de qualidade da evidência
+- **Vancouver**: Estilo de citações médicas
+
+## 📈 Métricas de Qualidade
+
+- ✅ Aderência PRISMA completa
+- ✅ Validação estatística automática
+- ✅ Controle de qualidade multi-camadas
+- ✅ Rastreabilidade de todas as fontes
+- ✅ Transparência metodológica
+
+## 🤝 Suporte
+
+- 📧 Email: suporte@nobregamedtech.com
+- 🐛 Issues: [GitHub Issues](https://github.com/nobregamedtech/metanalyst-agent/issues)
+- 📖 Docs: [Documentação Completa](https://docs.nobregamedtech.com/metanalyst-agent)
 
 ## 📄 Licença
 
-MIT License - veja [LICENSE](LICENSE) para detalhes.
+Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## 🙏 Agradecimentos
+
+- **LangGraph**: Framework multi-agente
+- **OpenAI**: Modelos de linguagem e embeddings
+- **Tavily**: APIs de busca e extração
+- **Comunidade científica**: Diretrizes e padrões
 
 ---
 
-**Nobrega Medtech** - Primeiro projeto open-source focado em automação de meta-análises médicas.
+**Nobrega Medtech** - Inovação em tecnologia médica através de IA
+
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Latest-green.svg)](https://langchain.ai/langgraph)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Medical](https://img.shields.io/badge/Medical-PRISMA-red.svg)](https://prisma-statement.org)
