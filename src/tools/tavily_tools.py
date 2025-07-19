@@ -1,456 +1,364 @@
 """
-Tavily Search and Extract tools for the Metanalyst Agent system.
-
-This module provides integration with Tavily API for web search and content extraction,
-specifically optimized for medical literature research with domain filtering.
+Ferramentas para integração com Tavily API.
+Implementa busca de literatura científica e extração de conteúdo.
 """
 
-from typing import List, Dict, Any, Optional, Union, Literal
-from langchain_core.tools import tool
-import json
-from datetime import datetime
 import logging
+from typing import List, Dict, Any, Optional
+from tavily import TavilyClient
+from langchain_core.tools import tool
+from src.utils.config import Config
+from src.models.schemas import SearchResult
+import re
+from datetime import datetime
 
-from ..utils.config import get_config
-
-# Try to import tavily, handle if not available
-try:
-    from tavily import TavilyClient
-    TAVILY_AVAILABLE = True
-except ImportError:
-    TAVILY_AVAILABLE = False
-    logging.warning("Tavily client not available. Install with: pip install tavily-python")
-
-# Medical literature domains for focused search
-MEDICAL_LITERATURE_DOMAINS = [
-    # Primary medical databases
-    "pubmed.ncbi.nlm.nih.gov", 
-    "www.ncbi.nlm.nih.gov/pmc", 
-    "cochranelibrary.com",
-    "lilacs.bvsalud.org", 
-    "scielo.org", 
-    "www.embase.com", 
-    "www.webofscience.com",
-    "www.scopus.com", 
-    "www.epistemonikos.org", 
-    "www.ebscohost.com",
-    "www.tripdatabase.com", 
-    "pedro.org.au", 
-    "doaj.org", 
-    "scholar.google.com",
-    
-    # Clinical trials databases
-    "clinicaltrials.gov", 
-    "apps.who.int/trialsearch", 
-    "www.clinicaltrialsregister.eu",
-    "www.isrctn.com",
-    
-    # High-impact medical journals
-    "www.thelancet.com", 
-    "www.nejm.org", 
-    "jamanetwork.com",
-    "www.bmj.com", 
-    "www.nature.com/nm", 
-    "www.acpjournals.org/journal/aim",
-    "journals.plos.org/plosmedicine", 
-    "www.jclinepi.com",
-    "systematicreviewsjournal.biomedcentral.com", 
-    "ascopubs.org/journal/jco",
-    "www.ahajournals.org/journal/circ", 
-    "www.gastrojournal.org",
-    "academic.oup.com/eurheartj", 
-    "www.archives-pmr.org", 
-    "www.jacc.org",
-    
-    # Brazilian medical literature
-    "www.scielo.br",
-    "scielo.br/j/csp/",
-    "cadernos.ensp.fiocruz.br",
-    "scielo.br/j/rsp/",
-    "scielo.org/journal/rpsp/",
-    "journal.paho.org",
-    "rbmt.org.br",
-    "revistas.usp.br/rmrp",
-    "memorias.ioc.fiocruz.br",
-    
-    # Additional sources
-    "nejm.org",
-    "thelancet.com",
-    "bmj.com",
-    "acpjournals.org/journal/aim",
-    "cacancerjournal.com",
-    "nature.com/nm",
-    "cell.com/cell-metabolism/home",
-    "thelancet.com/journals/langlo/home",
-    "ncbi.nlm.nih.gov/pmc",
-    "scopus.com",
-    "webofscience.com",
-    "bvsalud.org",
-    "jbi.global",
-    "tripdatabase.com",
-    "gov.br",
-    "droracle.ai",
-    "wolterskluwer.com",
-    "semanticscholar.org",
-    "globalindexmedicus.net",
-    "sciencedirect.com",
-    "openevidence.com"
-]
+logger = logging.getLogger(__name__)
 
 
-def get_tavily_client() -> Optional[TavilyClient]:
-    """
-    Get configured Tavily client.
+class TavilyTools:
+    """Classe para ferramentas Tavily."""
     
-    Returns:
-        TavilyClient instance or None if not available
-    """
-    if not TAVILY_AVAILABLE:
-        return None
+    def __init__(self):
+        """Inicializa cliente Tavily."""
+        if not Config.TAVILY_API_KEY:
+            raise ValueError("TAVILY_API_KEY não configurada")
+        
+        self.client = TavilyClient(api_key=Config.TAVILY_API_KEY)
+        self.search_config = Config.get_search_config()
     
-    config = get_config()
-    api_key = config.api.tavily_api_key
-    
-    if not api_key:
-        logging.error("Tavily API key not found in configuration")
-        return None
-    
-    return TavilyClient(api_key=api_key)
-
-
-@tool
-def search_medical_literature(
-    query: str,
-    max_results: int = 15,
-    search_depth: str = "basic",
-    time_range: Optional[str] = None,
-    include_additional_domains: Optional[List[str]] = None,
-    exclude_domains: Optional[List[str]] = None
-) -> str:
-    """
-    Search medical literature using Tavily with optimized parameters for medical research.
-    
-    This tool searches across reliable medical databases and journals, with parameters
-    specifically tuned for meta-analysis literature research.
-    
-    Args:
-        query: Search query for medical literature
-        max_results: Maximum number of results (5-20, default 15)
-        search_depth: Depth of search - 'basic' or 'advanced' (default 'basic')
-        time_range: Time filter - 'day', 'week', 'month', 'year' (optional)
-        include_additional_domains: Extra domains to include beyond medical defaults
-        exclude_domains: Domains to exclude from search
+    def search_literature(
+        self, 
+        query: str, 
+        domains: List[str] = None,
+        max_results: int = None
+    ) -> List[SearchResult]:
+        """
+        Busca literatura científica usando Tavily.
         
-    Returns:
-        JSON string with search results including URLs, titles, and content snippets
-    """
-    try:
-        client = get_tavily_client()
-        if not client:
-            return json.dumps({
-                "success": False,
-                "error": "Tavily client not available or API key missing",
-                "results": []
-            })
-        
-        # Validate parameters
-        max_results = max(5, min(20, max_results))  # Clamp between 5-20
-        if search_depth not in ["basic", "advanced"]:
-            search_depth = "basic"
-        
-        # Prepare domain lists
-        include_domains = MEDICAL_LITERATURE_DOMAINS.copy()
-        if include_additional_domains:
-            include_domains.extend(include_additional_domains)
-        
-        # Build search parameters
-        search_params = {
-            "query": query,
-            "search_depth": search_depth,
-            "max_results": max_results,
-            "include_domains": include_domains,
-            "topic": "general"
-        }
-        
-        # Add optional parameters
-        if time_range:
-            search_params["time_range"] = time_range
-        if exclude_domains:
-            search_params["exclude_domains"] = exclude_domains
-        
-        # Execute search
-        response = client.search(**search_params)
-        
-        # Process results
-        processed_results = []
-        urls_found = []
-        
-        for result in response.get('results', []):
-            processed_result = {
-                "title": result.get('title', 'No title'),
-                "url": result.get('url', ''),
-                "content": result.get('content', ''),
-                "score": result.get('score', 0),
-                "published_date": result.get('published_date', ''),
-                "raw_content": result.get('raw_content', '')
+        Args:
+            query: Query de busca
+            domains: Domínios específicos para buscar
+            max_results: Número máximo de resultados
+            
+        Returns:
+            Lista de resultados de busca
+        """
+        try:
+            max_results = max_results or self.search_config["max_papers"]
+            domains = domains or self.search_config["domains"]
+            
+            # Configurar busca para literatura científica
+            search_params = {
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": max_results,
+                "include_domains": domains,
+                "include_answer": False,
+                "include_raw_content": False
             }
-            processed_results.append(processed_result)
-            urls_found.append(result.get('url', ''))
-        
-        # Compile response
-        search_result = {
-            "success": True,
-            "query_used": query,
-            "total_results": len(processed_results),
-            "search_depth": search_depth,
-            "max_results": max_results,
-            "urls_found": urls_found,
-            "results": processed_results,
-            "search_timestamp": datetime.now().isoformat(),
-            "domains_searched": len(include_domains),
-            "parameters_used": search_params
-        }
-        
-        return json.dumps(search_result, ensure_ascii=False)
-        
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "error": f"Search failed: {str(e)}",
-            "query": query,
-            "results": [],
-            "error_timestamp": datetime.now().isoformat()
-        }
-        return json.dumps(error_result, ensure_ascii=False)
-
-
-@tool
-def extract_paper_content(
-    urls: List[str],
-    extract_depth: Literal["basic", "advanced"] = "advanced",
-    format_type: Literal["markdown", "text"] = "markdown"
-) -> str:
-    """
-    Extract content from medical paper URLs using Tavily.
-    
-    This tool extracts full content from medical literature URLs, optimized
-    for structured content like tables and embedded data.
-    
-    Args:
-        urls: List of URLs to extract content from
-        extract_depth: Extraction depth - 'basic' or 'advanced' (default 'advanced')
-        format_type: Content format - 'markdown' or 'text' (default 'markdown')
-        
-    Returns:
-        JSON string with extracted papers and structured content
-    """
-    try:
-        client = get_tavily_client()
-        if not client:
-            return json.dumps({
-                "success": False,
-                "error": "Tavily client not available or API key missing",
-                "extracted_papers": []
-            })
-        
-        # Validate parameters
-        validated_depth: Literal["basic", "advanced"] = "advanced"
-        if extract_depth in ["basic", "advanced"]:
-            validated_depth = extract_depth
             
-        validated_format: Literal["markdown", "text"] = "markdown"
-        if format_type in ["markdown", "text"]:
-            validated_format = format_type
-        
-        # Extract content
-        response = client.extract(
-            urls=urls,
-            extract_depth=validated_depth,
-            format=validated_format
-        )
-        
-        # Process extracted content
-        extracted_papers = []
-        successfully_processed = []
-        failed_urls = []
-        
-        for result in response.get('results', []):
-            url = result.get('url', '')
+            logger.info(f"Buscando literatura: '{query}' em {len(domains)} domínios")
             
-            try:
-                # Process each paper
-                paper = {
-                    "url": url,
-                    "title": result.get('title', ''),
-                    "raw_content": result.get('raw_content', ''),
-                    "content": result.get('content', ''),
-                    "extraction_status": "success",
-                    "content_length": len(result.get('raw_content', '')),
-                    "format": validated_format,
-                    "extract_depth": validated_depth,
-                    "extracted_at": datetime.now().isoformat()
+            response = self.client.search(**search_params)
+            results = []
+            
+            for item in response.get("results", []):
+                try:
+                    # Extrair informações do resultado
+                    title = item.get("title", "")
+                    url = item.get("url", "")
+                    content = item.get("content", "")
+                    
+                    # Extrair ano do título ou conteúdo
+                    year = self._extract_year(title + " " + content)
+                    
+                    # Extrair autores (heurística simples)
+                    authors = self._extract_authors(title, content)
+                    
+                    # Calcular scores de relevância
+                    relevance_score = self._calculate_relevance_score(
+                        query, title, content
+                    )
+                    
+                    result = SearchResult(
+                        url=url,
+                        title=title,
+                        authors=authors,
+                        abstract=content[:500] + "..." if len(content) > 500 else content,
+                        year=year,
+                        journal=self._extract_journal(content),
+                        relevance_score=relevance_score,
+                        pico_match_score=0.0,  # Será calculado depois
+                        search_query=query,
+                        search_domain=self._extract_domain(url)
+                    )
+                    
+                    results.append(result)
+                    
+                except Exception as e:
+                    logger.warning(f"Erro ao processar resultado: {e}")
+                    continue
+            
+            logger.info(f"Encontrados {len(results)} resultados para '{query}'")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Erro na busca Tavily: {e}")
+            return []
+    
+    def extract_content(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        Extrai conteúdo completo de uma URL usando Tavily Extract.
+        
+        Args:
+            url: URL para extrair
+            
+        Returns:
+            Conteúdo extraído ou None se falhou
+        """
+        try:
+            logger.info(f"Extraindo conteúdo de: {url}")
+            
+            response = self.client.extract(url)
+            
+            if not response or "content" not in response:
+                logger.warning(f"Nenhum conteúdo extraído de {url}")
+                return None
+            
+            content = response["content"]
+            
+            # Estruturar conteúdo extraído
+            extracted = {
+                "url": url,
+                "title": response.get("title", ""),
+                "content": content,
+                "raw_content": response.get("raw_content", ""),
+                "metadata": {
+                    "extraction_timestamp": datetime.now().isoformat(),
+                    "content_length": len(content),
+                    "has_raw_content": bool(response.get("raw_content"))
                 }
-                
-                extracted_papers.append(paper)
-                successfully_processed.append(url)
-                
-            except Exception as e:
-                failed_urls.append({"url": url, "error": str(e)})
+            }
+            
+            # Tentar extrair seções estruturadas
+            sections = self._extract_sections(content)
+            if sections:
+                extracted["sections"] = sections
+            
+            logger.info(f"Conteúdo extraído com sucesso: {len(content)} caracteres")
+            return extracted
+            
+        except Exception as e:
+            logger.error(f"Erro ao extrair conteúdo de {url}: {e}")
+            return None
+    
+    def _extract_year(self, text: str) -> Optional[int]:
+        """Extrai ano do texto usando regex."""
+        # Procurar anos entre 1900 e ano atual
+        current_year = datetime.now().year
+        year_pattern = r'\b(19[0-9]{2}|20[0-9]{2})\b'
+        matches = re.findall(year_pattern, text)
         
-        # Compile response
-        extraction_result = {
-            "success": True,
-            "total_urls": len(urls),
-            "successfully_extracted": len(successfully_processed),
-            "failed_extractions": len(failed_urls),
-            "extracted_papers": extracted_papers,
-            "successfully_processed_urls": successfully_processed,
-            "failed_urls": failed_urls,
-            "extraction_parameters": {
-                "extract_depth": validated_depth,
-                "format": validated_format
-            },
-            "extraction_timestamp": datetime.now().isoformat()
+        if matches:
+            # Retornar o ano mais recente encontrado
+            years = [int(year) for year in matches if 1900 <= int(year) <= current_year]
+            return max(years) if years else None
+        
+        return None
+    
+    def _extract_authors(self, title: str, content: str) -> List[str]:
+        """Extrai autores do título e conteúdo (heurística simples)."""
+        authors = []
+        
+        # Padrões comuns para autores
+        author_patterns = [
+            r'([A-Z][a-z]+ [A-Z][a-z]+)',  # Nome Sobrenome
+            r'([A-Z]\. [A-Z][a-z]+)',      # A. Sobrenome
+            r'([A-Z][a-z]+ [A-Z]\.)',      # Nome A.
+        ]
+        
+        text = title + " " + content[:200]  # Primeiros 200 chars do conteúdo
+        
+        for pattern in author_patterns:
+            matches = re.findall(pattern, text)
+            authors.extend(matches[:3])  # Máximo 3 autores
+            if len(authors) >= 3:
+                break
+        
+        return list(set(authors))  # Remover duplicatas
+    
+    def _extract_journal(self, content: str) -> Optional[str]:
+        """Extrai nome do journal do conteúdo."""
+        # Padrões comuns para journals
+        journal_patterns = [
+            r'Published in ([^,.\n]+)',
+            r'Journal: ([^,.\n]+)',
+            r'([A-Z][a-zA-Z\s]+Journal[a-zA-Z\s]*)',
+            r'(New England Journal of Medicine)',
+            r'(The Lancet)',
+            r'(Nature)',
+            r'(Science)',
+            r'(BMJ)',
+            r'(JAMA)'
+        ]
+        
+        for pattern in journal_patterns:
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        return None
+    
+    def _extract_domain(self, url: str) -> str:
+        """Extrai domínio da URL."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            return parsed.netloc
+        except:
+            return "unknown"
+    
+    def _calculate_relevance_score(
+        self, 
+        query: str, 
+        title: str, 
+        content: str
+    ) -> float:
+        """Calcula score de relevância baseado em palavras-chave."""
+        query_words = set(query.lower().split())
+        text = (title + " " + content).lower()
+        
+        # Contar palavras da query no texto
+        matches = sum(1 for word in query_words if word in text)
+        
+        # Normalizar por número de palavras na query
+        score = matches / len(query_words) if query_words else 0.0
+        
+        # Bonus por palavras no título
+        title_matches = sum(1 for word in query_words if word in title.lower())
+        title_bonus = (title_matches / len(query_words)) * 0.5
+        
+        return min(score + title_bonus, 1.0)
+    
+    def _extract_sections(self, content: str) -> Dict[str, str]:
+        """Extrai seções estruturadas do conteúdo."""
+        sections = {}
+        
+        # Padrões para seções comuns em papers
+        section_patterns = {
+            "abstract": r"(?i)abstract[:\s]*(.*?)(?=\n\s*(?:introduction|background|methods|keywords|$))",
+            "introduction": r"(?i)introduction[:\s]*(.*?)(?=\n\s*(?:methods|materials|background|results|$))",
+            "methods": r"(?i)(?:methods|methodology)[:\s]*(.*?)(?=\n\s*(?:results|discussion|conclusion|$))",
+            "results": r"(?i)results[:\s]*(.*?)(?=\n\s*(?:discussion|conclusion|references|$))",
+            "discussion": r"(?i)discussion[:\s]*(.*?)(?=\n\s*(?:conclusion|references|acknowledgments|$))",
+            "conclusion": r"(?i)conclusion[:\s]*(.*?)(?=\n\s*(?:references|acknowledgments|$))"
         }
         
-        return json.dumps(extraction_result, ensure_ascii=False)
+        for section_name, pattern in section_patterns.items():
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                section_text = match.group(1).strip()
+                if len(section_text) > 50:  # Só incluir se tiver conteúdo substancial
+                    sections[section_name] = section_text[:1000]  # Limitar tamanho
         
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "error": f"Content extraction failed: {str(e)}",
-            "urls": urls,
-            "extracted_papers": [],
-            "error_timestamp": datetime.now().isoformat()
-        }
-        return json.dumps(error_result, ensure_ascii=False)
+        return sections
+
+
+# Ferramentas como funções para uso no LangGraph
+@tool
+def search_scientific_literature(
+    query: str, 
+    max_results: int = 15,
+    domains: List[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Busca literatura científica usando Tavily API.
+    
+    Args:
+        query: Termo de busca
+        max_results: Número máximo de resultados
+        domains: Lista de domínios específicos
+        
+    Returns:
+        Lista de resultados de busca
+    """
+    tavily = TavilyTools()
+    results = tavily.search_literature(query, domains, max_results)
+    return [result.dict() for result in results]
 
 
 @tool
-def refine_medical_query(
-    pico_components: Dict[str, str],
-    search_type: str = "systematic_review"
-) -> str:
+def extract_article_content(url: str) -> Optional[Dict[str, Any]]:
     """
-    Generate optimized medical search queries from PICO components.
-    
-    Creates multiple search query variations specifically designed for medical
-    literature searches, incorporating best practices for systematic reviews.
+    Extrai conteúdo completo de um artigo científico.
     
     Args:
-        pico_components: Dictionary with patient, intervention, comparison, outcome
-        search_type: Type of search - 'systematic_review', 'meta_analysis', 'clinical_trial'
+        url: URL do artigo
         
     Returns:
-        JSON string with optimized queries and search strategies
+        Conteúdo extraído ou None
     """
-    try:
-        patient = pico_components.get('patient', '').strip()
-        intervention = pico_components.get('intervention', '').strip()
-        comparison = pico_components.get('comparison', '').strip()
-        outcome = pico_components.get('outcome', '').strip()
-        
-        # Base query variations
-        queries = []
-        
-        # Primary structured query
-        if all([patient, intervention, outcome]):
-            primary_query = f'("{patient}") AND ("{intervention}") AND ("{outcome}")'
-            if comparison:
-                primary_query += f' AND ("{comparison}")'
-            queries.append({
-                "query": primary_query,
-                "type": "structured_primary",
-                "description": "Primary structured query with all PICO components"
-            })
-        
-        # Alternative query formats
-        if patient and intervention and outcome:
-            # Natural language query
-            natural_query = f"{intervention} in {patient} {outcome}"
-            if comparison:
-                natural_query += f" versus {comparison}"
-            queries.append({
-                "query": natural_query,
-                "type": "natural_language",
-                "description": "Natural language query"
-            })
-            
-            # MeSH-style query
-            mesh_query = f"{patient} {intervention} {outcome}"
-            queries.append({
-                "query": mesh_query,
-                "type": "mesh_style",
-                "description": "MeSH-style query for medical databases"
-            })
-        
-        # Search type specific modifications
-        if search_type == "systematic_review":
-            for query in queries:
-                query["query"] += ' AND ("systematic review" OR "meta-analysis")'
-        elif search_type == "meta_analysis":
-            for query in queries:
-                query["query"] += ' AND ("meta-analysis" OR "pooled analysis")'
-        elif search_type == "clinical_trial":
-            for query in queries:
-                query["query"] += ' AND ("clinical trial" OR "randomized controlled trial" OR "RCT")'
-        
-        # Additional search terms suggestions
-        search_suggestions = {
-            "inclusion_terms": [
-                "randomized controlled trial",
-                "systematic review",
-                "meta-analysis",
-                "clinical trial",
-                "prospective study",
-                "cohort study"
-            ],
-            "exclusion_terms": [
-                "case report",
-                "editorial",
-                "letter",
-                "comment",
-                "animal study"
-            ]
-        }
-        
-        result = {
-            "success": True,
-            "pico_input": pico_components,
-            "search_type": search_type,
-            "generated_queries": queries,
-            "recommended_primary": queries[0]["query"] if queries else "",
-            "search_suggestions": search_suggestions,
-            "query_count": len(queries),
-            "generated_at": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, ensure_ascii=False)
-        
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "error": f"Query refinement failed: {str(e)}",
-            "pico_input": pico_components,
-            "generated_queries": [],
-            "error_timestamp": datetime.now().isoformat()
-        }
-        return json.dumps(error_result, ensure_ascii=False)
+    tavily = TavilyTools()
+    return tavily.extract_content(url)
 
 
-# Tools for the researcher agent (only search)
-RESEARCHER_TOOLS = [
-    search_medical_literature
-]
+@tool
+def search_with_pico(
+    population: str,
+    intervention: str,
+    comparison: str,
+    outcome: str,
+    max_results: int = 15
+) -> List[Dict[str, Any]]:
+    """
+    Busca literatura usando estrutura PICO.
+    
+    Args:
+        population: População estudada
+        intervention: Intervenção
+        comparison: Comparação
+        outcome: Desfecho
+        max_results: Máximo de resultados
+        
+    Returns:
+        Lista de resultados
+    """
+    # Construir query a partir do PICO
+    pico_query = f"{population} {intervention} {comparison} {outcome}"
+    
+    # Adicionar termos médicos relevantes
+    medical_terms = ["study", "trial", "randomized", "controlled", "meta-analysis"]
+    query = f"{pico_query} {' OR '.join(medical_terms)}"
+    
+    tavily = TavilyTools()
+    results = tavily.search_literature(query, max_results=max_results)
+    
+    # Calcular PICO match score para cada resultado
+    for result in results:
+        result.pico_match_score = _calculate_pico_match_score(
+            result, population, intervention, comparison, outcome
+        )
+    
+    # Ordenar por PICO match score
+    results.sort(key=lambda x: x.pico_match_score, reverse=True)
+    
+    return [result.dict() for result in results]
 
-# Tools for the extractor agent (only extract)
-EXTRACTOR_TOOLS = [
-    extract_paper_content
-]
 
-# List of all Tavily tools for easy import
-TAVILY_TOOLS = [
-    search_medical_literature,
-    extract_paper_content,
-    refine_medical_query
-]
+def _calculate_pico_match_score(
+    result: SearchResult,
+    population: str,
+    intervention: str,
+    comparison: str,
+    outcome: str
+) -> float:
+    """Calcula score de match com PICO."""
+    pico_terms = [population, intervention, comparison, outcome]
+    text = (result.title + " " + result.abstract).lower()
+    
+    matches = 0
+    for term in pico_terms:
+        if term.lower() in text:
+            matches += 1
+    
+    return matches / len(pico_terms)

@@ -1,466 +1,439 @@
 """
-Processor Agent for the Metanalyst Agent system.
-
-This agent combines the functionality of extraction and vectorization into a single
-efficient process, handling URL processing from raw URLs to vector store.
-
-The processor agent:
-1. Extracts content from URLs using tavily_extract
-2. Processes markdown to structured JSON using GPT-4.1-nano
-3. Chunks content intelligently
-4. Generates embeddings and stores in vector store
-5. Manages temporary files and cleanup
+Agente Processador - Combina extração de dados e vetorização.
+Responsável por extrair conteúdo, processar dados estruturados e criar embeddings.
 """
 
-import json
-import os
-import shutil
+import logging
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from uuid import uuid4
-import asyncio
-import aiofiles
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import uuid
 
-from langchain_core.tools import tool
-from langchain_openai import OpenAI
-from langchain_core.messages import HumanMessage
-from openai import OpenAI as OpenAIClient
-from pydantic import SecretStr
-import faiss
-import numpy as np
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.store import BaseStore
 
-from ..models.state import MetanalysisState
-from ..models.schemas import ExtractedPaper, create_paper_template
-from ..utils.config import get_config
-from ..tools.tavily_tools import extract_paper_content
+from src.models.state import MetaAnalysisState, add_agent_log
+from src.tools.tavily_tools import TavilyTools
+from src.tools.processing_tools import ProcessingTools
+from src.utils.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessorAgent:
     """
-    Processor Agent that combines extraction and vectorization.
+    Agente Processador.
     
-    This agent handles the complete pipeline from URLs to vector store,
-    including content extraction, processing, chunking, and embedding.
+    Combina extração de conteúdo usando Tavily Extract, processamento 
+    de dados estruturados com LLM e criação de embeddings vetoriais.
     """
     
     def __init__(self):
-        """Initialize the processor agent."""
-        self.config = get_config()
-        self.openai_client = OpenAIClient(api_key=str(self.config.api.openai_api_key or ""))
-        api_key = self.config.api.openai_api_key or ""
-        self.fast_llm = OpenAI(
-            model=self.config.llm.fast_processing_model,
-            api_key=SecretStr(str(api_key)) if api_key else None,
-            temperature=0.1
-        )
-        
-        # Ensure directories exist
-        self.data_dir = Path("data")
-        self.url_json_dir = self.data_dir / "url_json"
-        self.chunks_dir = self.data_dir / "chunks"
-        self.vector_store_dir = self.data_dir / "vector_store"
-        
-        for directory in [self.url_json_dir, self.chunks_dir, self.vector_store_dir]:
-            directory.mkdir(parents=True, exist_ok=True)
+        """Inicializa o agente processador."""
+        self.tavily = TavilyTools()
+        self.processor = ProcessingTools()
+        self.name = "processor"
+        self.processing_config = Config.get_processing_config()
     
-    def process_urls(self, urls: List[str]) -> Dict[str, Any]:
+    def process_articles(
+        self,
+        state: MetaAnalysisState,
+        config: RunnableConfig = None,
+        *,
+        store: BaseStore
+    ) -> Dict[str, Any]:
         """
-        Process a list of URLs through the complete pipeline.
+        Processa artigos da fila de processamento.
         
         Args:
-            urls: List of URLs to process
+            state: Estado atual da meta-análise
+            config: Configuração do LangGraph
+            store: Store para persistência de longo prazo
             
         Returns:
-            Dict containing processing results and updated state information
+            Atualizações do estado
         """
-        # Step 0: Deduplicate URLs
-        original_count = len(urls)
-        deduplicated_urls = self._deduplicate_urls(urls)
-        duplicates_removed = original_count - len(deduplicated_urls)
-        
-        if duplicates_removed > 0:
-            print(f"🔄 Removed {duplicates_removed} duplicate URLs. Processing {len(deduplicated_urls)} unique URLs...")
-        else:
-            print(f"🔄 Processing {len(deduplicated_urls)} URLs...")
+        start_time = time.time()
         
         try:
-            # Step 1: Extract content from URLs
-            print("📥 Step 1: Extracting content from URLs...")
-            extracted_contents = self._extract_urls_content(deduplicated_urls)
+            processing_queue = state.get("processing_queue", [])
             
-            if not extracted_contents:
-                return {
-                    "success": False,
-                    "error": "No content could be extracted from URLs",
-                    "url_processed": [],
-                    "url_not_processed": deduplicated_urls,
-                    "duplicates_removed": duplicates_removed,
-                    "original_url_count": original_count
-                }
+            if not processing_queue:
+                logger.info("Nenhum artigo na fila de processamento")
+                return self._handle_no_articles(state)
             
-            # Step 2: Process markdown to structured JSON
-            print("🧠 Step 2: Processing content with GPT-4.1-nano...")
-            processed_papers = self._process_content_to_json(extracted_contents)
+            # Processar próximo artigo da fila
+            url = processing_queue[0]
+            logger.info(f"Processando artigo: {url}")
             
-            # Step 3: Save JSONs temporarily
-            print("💾 Step 3: Saving structured JSONs...")
-            self._save_json_files(processed_papers)
+            # Extrair conteúdo
+            content = self.tavily.extract_content(url)
+            if not content:
+                return self._handle_extraction_failure(state, url)
             
-            # Step 4: Chunk all JSON files
-            print("🔪 Step 4: Chunking content...")
-            chunks = self._chunk_json_files()
+            # Extrair dados estruturados
+            pico = state.get("pico", {})
+            extracted_study = self.processor.extract_structured_data(content, pico)
+            if not extracted_study:
+                return self._handle_extraction_failure(state, url)
             
-            # Step 5: Clean up JSON files
-            print("🧹 Step 5: Cleaning up temporary JSON files...")
-            self._cleanup_json_files()
+            # Criar chunks vetorizados
+            chunks = self.processor.create_vector_chunks(extracted_study, content)
             
-            # Step 6: Generate embeddings and store in vector store
-            print("🧠 Step 6: Generating embeddings and storing in vector store...")
-            vector_store_ready = self._vectorize_and_store_chunks(chunks)
+            # Armazenar no store de longo prazo
+            article_id = self._store_article_data(
+                store, state["meta_analysis_id"], url, content, 
+                extracted_study, chunks
+            )
             
-            # Step 7: Clean up chunk files
-            print("🧹 Step 7: Cleaning up temporary chunk files...")
-            self._cleanup_chunk_files()
+            # Atualizar estado
+            processed_articles = state.get("processed_articles", [])
+            processed_articles.append({
+                "id": article_id,
+                "url": url,
+                "title": extracted_study.characteristics.title,
+                "authors": extracted_study.characteristics.authors,
+                "year": extracted_study.characteristics.year,
+                "study_type": extracted_study.characteristics.study_type.value,
+                "sample_size": extracted_study.characteristics.sample_size,
+                "quality_score": extracted_study.quality_assessment.quality_score,
+                "confidence_score": extracted_study.confidence_score,
+                "outcomes_count": len(extracted_study.outcomes),
+                "chunks_count": len(chunks)
+            })
             
-            # Prepare results
-            processed_urls = [content['url'] for content in extracted_contents]
-            failed_urls = [url for url in deduplicated_urls if url not in processed_urls]
+            # Remover da fila de processamento
+            remaining_queue = processing_queue[1:]
             
-            result = {
-                "success": True,
-                "message": f"Successfully processed {len(processed_urls)} URLs",
-                "url_processed": processed_urls,
-                "url_not_processed": failed_urls,
-                "vector_store_ready": vector_store_ready,
-                "vector_store_path": str(self.vector_store_dir),
-                "chunks_created": len(chunks),
-                "processed_papers": len(processed_papers),
-                "processing_timestamp": datetime.now().isoformat(),
-                "duplicates_removed": duplicates_removed,
-                "original_url_count": original_count
+            execution_time = time.time() - start_time
+            
+            logger.info(f"Artigo processado com sucesso: {len(chunks)} chunks criados")
+            
+            return {
+                "processing_queue": remaining_queue,
+                "processed_articles": processed_articles,
+                "chunk_count": state.get("chunk_count", 0) + len(chunks),
+                "total_articles_processed": len(processed_articles),
+                "execution_time": {
+                    **state.get("execution_time", {}),
+                    "processing": state.get("execution_time", {}).get("processing", 0) + execution_time
+                },
+                "messages": state["messages"] + [
+                    AIMessage(f"Artigo processado: {extracted_study.characteristics.title[:100]}...")
+                ],
+                **add_agent_log(
+                    state,
+                    self.name,
+                    "article_processed",
+                    {
+                        "url": url,
+                        "chunks_created": len(chunks),
+                        "quality_score": extracted_study.quality_assessment.quality_score,
+                        "execution_time": execution_time
+                    }
+                )
             }
-            
-            print(f"✅ Processing complete! {len(processed_urls)} URLs processed successfully.")
-            
-            return result
             
         except Exception as e:
-            print(f"❌ Error processing URLs: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "url_processed": [],
-                "url_not_processed": deduplicated_urls if 'deduplicated_urls' in locals() else urls,
-                "duplicates_removed": duplicates_removed if 'duplicates_removed' in locals() else 0,
-                "original_url_count": original_count if 'original_count' in locals() else len(urls)
-            }
+            return self._handle_error(state, str(e))
     
-    def _extract_urls_content(self, urls: List[str]) -> List[Dict[str, Any]]:
-        """Extract content from URLs using tavily_extract."""
-        extracted_contents = []
+    def create_vector_store(
+        self,
+        state: MetaAnalysisState,
+        config: RunnableConfig = None,
+        *,
+        store: BaseStore
+    ) -> Dict[str, Any]:
+        """
+        Cria vector store com todos os chunks processados.
         
-        # Process URLs in batches to avoid overwhelming the API
-        batch_size = 5
-        for i in range(0, len(urls), batch_size):
-            batch = urls[i:i + batch_size]
+        Args:
+            state: Estado atual
+            config: Configuração do LangGraph
+            store: Store para persistência
             
-            try:
-                # Use tavily_extract to get content
-                extraction_result_str = extract_paper_content.invoke({"urls": batch})
-                extraction_result = json.loads(extraction_result_str)
-                
-                if extraction_result.get("success"):
-                    for url_result in extraction_result.get("extracted_papers", []):
-                        if url_result.get("raw_content"):
-                            extracted_contents.append({
-                                "url": url_result["url"],
-                                "content": url_result["raw_content"],
-                                "title": url_result.get("title", ""),
-                                "extraction_timestamp": datetime.now().isoformat()
-                            })
-                            
-            except Exception as e:
-                print(f"⚠️ Error extracting batch {i//batch_size + 1}: {str(e)}")
-                continue
-        
-        return extracted_contents
-    
-    def _process_content_to_json(self, extracted_contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process extracted content to structured JSON using GPT-4.1-nano."""
-        processed_papers = []
-        
-        for content_data in extracted_contents:
-            try:
-                # Create prompt for GPT-4.1-nano
-                prompt = f"""
-                Analise o seguinte conteúdo de uma publicação científica em markdown e extraia as informações em formato JSON estruturado.
-
-                Conteúdo:
-                {content_data['content'][:8000]}
-
-                IMPORTANTE: Retorne APENAS um JSON válido, sem explicações ou texto adicional.
-
-                Estrutura esperada:
-                {{
-                    "reference": "referência completa em formato Vancouver da publicação",
-                    "content": "Relatório dos pontos mais importantes da publicação, principalmente dados objetivos como tamanho de amostra, dados estatísticos, resultados, RR, OR, etc",
-                    "url": "{content_data['url']}"
-                }}
-
-                Seja preciso e objetivo. Extraia apenas informações factuais e quantitativas.
-                """
-                
-                # Use GPT-4.1-nano for fast processing
-                response = self.fast_llm.invoke(prompt)
-                
-                # Clean response to extract only JSON
-                response_clean = response.strip()
-                if response_clean.startswith('```json'):
-                    response_clean = response_clean[7:]
-                if response_clean.endswith('```'):
-                    response_clean = response_clean[:-3]
-                response_clean = response_clean.strip()
-                
-                # Try to parse JSON response
-                try:
-                    processed_data = json.loads(response_clean)
-                    processed_data["processing_timestamp"] = datetime.now().isoformat()
-                    processed_papers.append(processed_data)
-                    
-                except json.JSONDecodeError:
-                    print(f"⚠️ Could not parse JSON for {content_data['url']}")
-                    # Create fallback structure
-                    processed_papers.append({
-                        "reference": f"Reference for {content_data.get('title', 'Unknown')}",
-                        "content": content_data['content'][:2000],  # Truncate if needed
-                        "url": content_data['url'],
-                        "processing_timestamp": datetime.now().isoformat()
-                    })
-                    
-            except Exception as e:
-                print(f"⚠️ Error processing content for {content_data['url']}: {str(e)}")
-                continue
-        
-        return processed_papers
-    
-    def _save_json_files(self, processed_papers: List[Dict[str, Any]]) -> None:
-        """Save processed papers as JSON files."""
-        for i, paper in enumerate(processed_papers):
-            try:
-                file_path = self.url_json_dir / f"paper_{i:04d}_{uuid4().hex[:8]}.json"
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(paper, f, ensure_ascii=False, indent=2)
-                    
-            except Exception as e:
-                print(f"⚠️ Error saving JSON file for paper {i}: {str(e)}")
-    
-    def _chunk_json_files(self) -> List[Dict[str, Any]]:
-        """Chunk all JSON files into smaller pieces."""
-        chunks = []
-        
-        for json_file in self.url_json_dir.glob("*.json"):
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    paper_data = json.load(f)
-                
-                # Chunk the content
-                content = paper_data.get("content", "")
-                paper_chunks = self._chunk_text(
-                    content, 
-                    self.config.vector.chunk_size, 
-                    self.config.vector.chunk_overlap
-                )
-                
-                # Create chunk objects
-                for i, chunk_content in enumerate(paper_chunks):
-                    chunk = {
-                        "id": str(uuid4()),
-                        "reference": paper_data.get("reference", ""),
-                        "content": chunk_content,
-                        "url": paper_data.get("url", ""),
-                        "chunk_index": i,
-                        "total_chunks": len(paper_chunks),
-                        "source_file": json_file.name
-                    }
-                    chunks.append(chunk)
-                    
-                    # Save chunk to file
-                    chunk_file = self.chunks_dir / f"chunk_{chunk['id']}.json"
-                    with open(chunk_file, 'w', encoding='utf-8') as f:
-                        json.dump(chunk, f, ensure_ascii=False, indent=2)
-                
-            except Exception as e:
-                print(f"⚠️ Error chunking {json_file}: {str(e)}")
-                continue
-        
-        return chunks
-    
-    def _chunk_text(self, text: str, chunk_size: int, overlap: int) -> List[str]:
-        """Chunk text into smaller pieces with overlap."""
-        if len(text) <= chunk_size:
-            return [text]
-        
-        chunks = []
-        start = 0
-        
-        while start < len(text):
-            end = start + chunk_size
-            
-            # If we're not at the end, try to break at a sentence boundary
-            if end < len(text):
-                # Look for sentence endings near the chunk boundary
-                for i in range(end, max(start + chunk_size // 2, end - 100), -1):
-                    if text[i] in '.!?':
-                        end = i + 1
-                        break
-            
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            
-            # Move start position with overlap
-            start = end - overlap
-            
-            # Avoid infinite loops
-            if start >= len(text):
-                break
-        
-        return chunks
-    
-    def _vectorize_and_store_chunks(self, chunks: List[Dict[str, Any]]) -> bool:
-        """Generate embeddings and store in vector store."""
+        Returns:
+            Atualizações do estado
+        """
         try:
-            if not chunks:
-                return False
+            logger.info("Criando vector store consolidado")
             
-            # Generate embeddings for all chunks
+            # Buscar todos os chunks armazenados
+            namespace = ("metanalysis", state["meta_analysis_id"], "chunks")
+            all_chunks = []
+            
+            # Iterar sobre artigos processados para buscar chunks
+            for article in state.get("processed_articles", []):
+                article_namespace = ("metanalysis", state["meta_analysis_id"], "articles", article["id"])
+                article_data = store.get(article_namespace, "data")
+                
+                if article_data and "chunks" in article_data.value:
+                    all_chunks.extend(article_data.value["chunks"])
+            
+            if not all_chunks:
+                logger.warning("Nenhum chunk encontrado para criar vector store")
+                return {
+                    "messages": state["messages"] + [
+                        AIMessage("Erro: Nenhum chunk encontrado para vetorização")
+                    ]
+                }
+            
+            # Criar vector store usando FAISS local
+            vector_store_id = self._create_faiss_vector_store(
+                all_chunks, state["meta_analysis_id"]
+            )
+            
+            # Armazenar metadados do vector store
+            vector_metadata = {
+                "vector_store_id": vector_store_id,
+                "total_chunks": len(all_chunks),
+                "created_at": datetime.now().isoformat(),
+                "embedding_model": Config.EMBEDDING_MODEL
+            }
+            
+            store.put(
+                ("metanalysis", state["meta_analysis_id"], "vector_store"),
+                "metadata",
+                vector_metadata
+            )
+            
+            logger.info(f"Vector store criado com {len(all_chunks)} chunks")
+            
+            return {
+                "vector_store_id": vector_store_id,
+                "vector_store_status": {
+                    "created": True,
+                    "total_chunks": len(all_chunks),
+                    "created_at": datetime.now().isoformat()
+                },
+                "chunk_count": len(all_chunks),
+                "messages": state["messages"] + [
+                    AIMessage(f"Vector store criado com {len(all_chunks)} chunks")
+                ],
+                **add_agent_log(
+                    state,
+                    self.name,
+                    "vector_store_created",
+                    {"total_chunks": len(all_chunks)}
+                )
+            }
+            
+        except Exception as e:
+            return self._handle_error(state, str(e))
+    
+    def _store_article_data(
+        self,
+        store: BaseStore,
+        meta_analysis_id: str,
+        url: str,
+        content: Dict[str, Any],
+        extracted_study,
+        chunks: List
+    ) -> str:
+        """Armazena dados do artigo no store de longo prazo."""
+        article_id = str(uuid.uuid4())
+        
+        # Namespace hierárquico para organização
+        namespace = ("metanalysis", meta_analysis_id, "articles", article_id)
+        
+        # Dados completos do artigo
+        article_data = {
+            "url": url,
+            "content": content,
+            "extracted_study": extracted_study.dict(),
+            "chunks": [chunk.dict() for chunk in chunks],
+            "processed_at": datetime.now().isoformat(),
+            "processor_version": "1.0"
+        }
+        
+        # Armazenar no store
+        store.put(namespace, "data", article_data)
+        
+        # Armazenar metadados para busca rápida
+        metadata = {
+            "title": extracted_study.characteristics.title,
+            "authors": extracted_study.characteristics.authors,
+            "year": extracted_study.characteristics.year,
+            "quality_score": extracted_study.quality_assessment.quality_score,
+            "confidence_score": extracted_study.confidence_score,
+            "chunks_count": len(chunks)
+        }
+        
+        store.put(namespace, "metadata", metadata)
+        
+        logger.info(f"Artigo armazenado com ID: {article_id}")
+        return article_id
+    
+    def _create_faiss_vector_store(
+        self, 
+        chunks: List[Dict[str, Any]], 
+        meta_analysis_id: str
+    ) -> str:
+        """Cria vector store FAISS local."""
+        try:
+            import faiss
+            import numpy as np
+            import pickle
+            import os
+            
+            # Extrair embeddings
             embeddings = []
             chunk_metadata = []
             
-            print(f"🧠 Generating embeddings for {len(chunks)} chunks...")
+            for chunk in chunks:
+                if "embedding" in chunk and chunk["embedding"]:
+                    embeddings.append(chunk["embedding"])
+                    chunk_metadata.append({
+                        "chunk_id": chunk["chunk_id"],
+                        "study_id": chunk["study_id"],
+                        "content": chunk["content"],
+                        "section": chunk["section"],
+                        "study_title": chunk["study_title"],
+                        "study_authors": chunk["study_authors"],
+                        "study_year": chunk["study_year"]
+                    })
             
-            # Process chunks in batches
-            batch_size = 50
-            for i in range(0, len(chunks), batch_size):
-                batch = chunks[i:i + batch_size]
-                batch_texts = [chunk['content'] for chunk in batch]
-                
-                # Generate embeddings
-                response = self.openai_client.embeddings.create(
-                    model=self.config.vector.embedding_model,
-                    input=batch_texts
-                )
-                
-                # Extract embeddings
-                for j, embedding_data in enumerate(response.data):
-                    embeddings.append(embedding_data.embedding)
-                    chunk_metadata.append(batch[j])
+            if not embeddings:
+                raise ValueError("Nenhum embedding encontrado")
             
-            # Convert to numpy array
+            # Converter para numpy array
             embeddings_array = np.array(embeddings, dtype=np.float32)
             
-            # Create FAISS index
+            # Criar índice FAISS
             dimension = embeddings_array.shape[1]
-            index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
+            index = faiss.IndexFlatIP(dimension)  # Inner Product (cosine similarity)
             
-            # Normalize embeddings for cosine similarity  
-            embeddings_array = np.ascontiguousarray(embeddings_array, dtype=np.float32)
-            # Manual L2 normalization for compatibility
-            norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
-            embeddings_array = embeddings_array / norms
+            # Normalizar embeddings para cosine similarity
+            faiss.normalize_L2(embeddings_array)
             
-            # Add embeddings to index
-            if embeddings_array.size > 0 and embeddings_array.shape[0] > 0:
-                index.add(embeddings_array)
+            # Adicionar embeddings ao índice
+            index.add(embeddings_array)
             
-            # Save index
-            try:
-                index_path = self.vector_store_dir / "faiss_index.index"
-                faiss.write_index(index, str(index_path))
-                
-                # Save metadata
-                metadata_path = self.vector_store_dir / "chunk_metadata.json"
-                with open(metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump(chunk_metadata, f, ensure_ascii=False, indent=2)
-                
-                print(f"✅ Vector store created with {len(embeddings)} embeddings")
-                
-                return True
-            except Exception as faiss_error:
-                print(f"❌ Error saving FAISS index: {str(faiss_error)}")
-                return False
+            # Salvar índice e metadados
+            vector_store_id = f"faiss_{meta_analysis_id}"
+            os.makedirs("data/vector_stores", exist_ok=True)
+            
+            # Salvar índice FAISS
+            faiss.write_index(index, f"data/vector_stores/{vector_store_id}.index")
+            
+            # Salvar metadados dos chunks
+            with open(f"data/vector_stores/{vector_store_id}_metadata.pkl", "wb") as f:
+                pickle.dump(chunk_metadata, f)
+            
+            logger.info(f"Vector store FAISS criado: {vector_store_id}")
+            return vector_store_id
             
         except Exception as e:
-            print(f"❌ Error creating vector store: {str(e)}")
-            return False
+            logger.error(f"Erro ao criar vector store FAISS: {e}")
+            raise
     
-    def _cleanup_json_files(self) -> None:
-        """Clean up temporary JSON files."""
-        try:
-            for json_file in self.url_json_dir.glob("*.json"):
-                json_file.unlink()
-            print("🧹 Temporary JSON files cleaned up")
-        except Exception as e:
-            print(f"⚠️ Error cleaning up JSON files: {str(e)}")
+    def _handle_no_articles(self, state: MetaAnalysisState) -> Dict[str, Any]:
+        """Lida com caso de não haver artigos para processar."""
+        # Verificar se já temos vector store criado
+        if not state.get("vector_store_id") and state.get("processed_articles"):
+            # Criar vector store com artigos já processados
+            logger.info("Criando vector store com artigos já processados")
+            return {
+                "current_phase": "vectorization",
+                "messages": state["messages"] + [
+                    AIMessage("Iniciando criação do vector store...")
+                ]
+            }
+        
+        return {
+            "messages": state["messages"] + [
+                AIMessage("Processamento de artigos concluído")
+            ]
+        }
     
-    def _cleanup_chunk_files(self) -> None:
-        """Clean up temporary chunk files."""
-        try:
-            for chunk_file in self.chunks_dir.glob("*.json"):
-                chunk_file.unlink()
-            print("🧹 Temporary chunk files cleaned up")
-        except Exception as e:
-            print(f"⚠️ Error cleaning up chunk files: {str(e)}")
+    def _handle_extraction_failure(
+        self, 
+        state: MetaAnalysisState, 
+        url: str
+    ) -> Dict[str, Any]:
+        """Lida com falha na extração de um artigo."""
+        logger.warning(f"Falha ao processar artigo: {url}")
+        
+        # Adicionar à lista de URLs com falha
+        failed_urls = state.get("failed_urls", [])
+        failed_urls.append({
+            "url": url,
+            "error": "Falha na extração de dados",
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Remover da fila de processamento
+        processing_queue = state.get("processing_queue", [])
+        remaining_queue = processing_queue[1:] if processing_queue else []
+        
+        return {
+            "processing_queue": remaining_queue,
+            "failed_urls": failed_urls,
+            "messages": state["messages"] + [
+                AIMessage(f"Falha ao processar artigo: {url}")
+            ],
+            **add_agent_log(
+                state,
+                self.name,
+                "extraction_failed",
+                {"url": url},
+                "warning"
+            )
+        }
     
-    def _deduplicate_urls(self, urls: List[str]) -> List[str]:
-        """
-        Deduplicate URLs while preserving order.
+    def _handle_error(self, state: MetaAnalysisState, error_msg: str) -> Dict[str, Any]:
+        """Lida com erros no processamento."""
+        logger.error(f"Erro no agente processador: {error_msg}")
         
-        Args:
-            urls: List of URLs that may contain duplicates
-            
-        Returns:
-            List of unique URLs in original order
-        """
-        seen = set()
-        unique_urls = []
-        
-        for url in urls:
-            # Normalize URL for comparison (remove trailing slashes, convert to lowercase)
-            normalized_url = url.strip().lower().rstrip('/')
-            
-            if normalized_url not in seen:
-                seen.add(normalized_url)
-                unique_urls.append(url)  # Keep original URL format
-        
-        return unique_urls
+        return {
+            "messages": state["messages"] + [
+                AIMessage(f"Erro no processamento: {error_msg}")
+            ],
+            **add_agent_log(
+                state,
+                self.name,
+                "processing_error",
+                {"error": error_msg},
+                "error"
+            )
+        }
 
 
-# Create processor agent tool
-@tool
-def process_urls(url_list: List[str]) -> Dict[str, Any]:
+def processor_agent(
+    state: MetaAnalysisState,
+    config: RunnableConfig = None,
+    *,
+    store: BaseStore
+) -> Dict[str, Any]:
     """
-    Process URLs through the complete extraction and vectorization pipeline.
-    
-    This tool combines extraction and vectorization into a single efficient process:
-    1. Extracts content from URLs using tavily_extract
-    2. Processes markdown to structured JSON using GPT-4.1-nano
-    3. Chunks content intelligently (1000 chars, 100 overlap)
-    4. Generates embeddings with text-embedding-3-small
-    5. Stores in local vector store
-    6. Manages temporary files and cleanup
+    Nó do agente processador para uso no LangGraph.
     
     Args:
-        url_list: List of URLs to process
+        state: Estado atual da meta-análise
+        config: Configuração do LangGraph
+        store: Store para persistência
         
     Returns:
-        Dict containing processing results and state updates
+        Atualizações do estado
     """
     processor = ProcessorAgent()
-    return processor.process_urls(url_list)
-
-
-# For backwards compatibility - create the processor agent instance
-processor_agent = ProcessorAgent()
+    
+    # Verificar fase atual
+    current_phase = state.get("current_phase")
+    
+    if current_phase == "extraction":
+        # Processar artigos
+        return processor.process_articles(state, config, store=store)
+    
+    elif current_phase == "vectorization":
+        # Criar vector store
+        return processor.create_vector_store(state, config, store=store)
+    
+    else:
+        # Fase desconhecida, retornar erro
+        return {
+            "messages": state["messages"] + [
+                AIMessage(f"Fase desconhecida para processador: {current_phase}")
+            ]
+        }
