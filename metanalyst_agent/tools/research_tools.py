@@ -1,6 +1,7 @@
 """Research tools for literature search and relevance assessment"""
 
 import json
+import os
 from typing import List, Dict, Any, Optional
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -29,7 +30,10 @@ def search_literature(
     """
     try:
         # Initialize Tavily client (API key should be in environment)
-        client = TavilyClient()
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            raise ValueError("TAVILY_API_KEY environment variable is required")
+        client = TavilyClient(api_key=api_key)
         
         # Default to medical literature domains
         if not domains:
@@ -86,7 +90,10 @@ def generate_search_queries(pico: Dict[str, str]) -> List[str]:
         List of optimized search queries for different databases
     """
     try:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.1, api_key=api_key)
         
         prompt = f"""
         You are an expert medical librarian specializing in systematic reviews and meta-analyses.
@@ -177,7 +184,10 @@ def assess_article_relevance(
         Assessment with relevance score, reasoning, and recommendation
     """
     try:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.1, api_key=api_key)
         
         prompt = f"""
         You are an expert systematic reviewer assessing article relevance for a meta-analysis.

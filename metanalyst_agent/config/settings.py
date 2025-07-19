@@ -4,7 +4,7 @@ Configuration settings for Metanalyst-Agent using Pydantic for validation
 
 import os
 from typing import Optional, Dict, Any, List
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 from pathlib import Path
 
@@ -71,21 +71,21 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = False
         
-    @validator("faiss_index_path", "log_file", pre=True)
+    @field_validator("faiss_index_path", "log_file", mode="before")
     def convert_to_path(cls, v):
         """Convert string paths to Path objects"""
         if isinstance(v, str):
             return Path(v)
         return v
         
-    @validator("default_quality_threshold")
+    @field_validator("default_quality_threshold")
     def validate_quality_threshold(cls, v):
         """Validate quality threshold is between 0 and 1"""
         if not 0 <= v <= 1:
             raise ValueError("Quality threshold must be between 0 and 1")
         return v
         
-    @validator("vector_dimension")
+    @field_validator("vector_dimension")
     def validate_vector_dimension(cls, v):
         """Validate vector dimension is positive"""
         if v <= 0:
@@ -109,7 +109,14 @@ class Settings(BaseSettings):
         return {
             "api_key": self.openai_api_key,
             "model": self.openai_model,
-            "embedding_model": self.openai_embedding_model
+            "temperature": 0.1
+        }
+        
+    def get_embedding_config(self) -> Dict[str, Any]:
+        """Get OpenAI embeddings configuration dictionary"""
+        return {
+            "api_key": self.openai_api_key,
+            "model": self.openai_embedding_model
         }
         
     def get_tavily_config(self) -> Dict[str, Any]:

@@ -8,12 +8,11 @@ from langgraph.prebuilt import create_react_agent
 
 from ..config.settings import settings
 from ..tools.processing_tools import (
-    extract_article_content_with_tavily,
-    extract_statistical_data_with_llm,
-    generate_vancouver_citation_with_llm,
-    chunk_and_vectorize_content,
-    create_vector_store,
-    process_article_complete,
+    extract_article_content,
+    extract_statistical_data,
+    generate_vancouver_citation,
+    chunk_and_vectorize,
+    process_article_pipeline,
 )
 from ..tools.handoff_tools import (
     transfer_to_researcher,
@@ -45,12 +44,11 @@ def create_processor_agent():
     
     # Processor agent tools
     processor_tools = [
-        extract_article_content_with_tavily,
-        extract_statistical_data_with_llm,
-        generate_vancouver_citation_with_llm,
-        chunk_and_vectorize_content,
-        create_vector_store,
-        process_article_complete,
+        extract_article_content,
+        extract_statistical_data,
+        generate_vancouver_citation,
+        chunk_and_vectorize,
+        process_article_pipeline,
         # Handoff tools
         transfer_to_researcher,
         transfer_to_retriever,

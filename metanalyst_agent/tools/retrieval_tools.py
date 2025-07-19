@@ -14,8 +14,13 @@ import faiss
 from ..config.settings import settings
 
 
-# Initialize embeddings
-embeddings = OpenAIEmbeddings(**settings.get_embedding_config())
+# Initialize embeddings lazily
+def get_embeddings():
+    """Get or create OpenAI embeddings client"""
+    config = settings.get_embedding_config()
+    if not config.get("api_key"):
+        raise ValueError("OPENAI_API_KEY environment variable is required")
+    return OpenAIEmbeddings(**config)
 
 
 @tool
@@ -40,7 +45,7 @@ def search_vector_store(
     
     try:
         # Generate query embedding
-        query_embedding = embeddings.embed_query(query)
+        query_embedding = get_embeddings().embed_query(query)
         query_vector = np.array([query_embedding]).astype('float32')
         
         # Normalize query vector for cosine similarity

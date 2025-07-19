@@ -15,8 +15,13 @@ from datetime import datetime
 from ..config.settings import settings
 
 
-# Initialize LLM
-llm = ChatOpenAI(**settings.get_openai_config())
+# Initialize LLM lazily
+def get_llm():
+    """Get or create OpenAI LLM client"""
+    config = settings.get_openai_config()
+    if not config.get("api_key"):
+        raise ValueError("OPENAI_API_KEY environment variable is required")
+    return ChatOpenAI(**config)
 
 
 @tool
@@ -163,7 +168,7 @@ def generate_report_section_with_llm(
     try:
         prompt = ChatPromptTemplate.from_template(section_prompts[section_type])
         
-        response = llm.invoke(prompt.format(
+        response = get_llm().invoke(prompt.format(
             population=pico.get("P", ""),
             intervention=pico.get("I", ""),
             comparison=pico.get("C", ""),
@@ -211,7 +216,7 @@ def format_citations_with_llm(
     """)
     
     try:
-        response = llm.invoke(prompt.format(
+        response = get_llm().invoke(prompt.format(
             citations=json.dumps(citations, indent=2),
             style=citation_style
         ))
@@ -353,7 +358,7 @@ def generate_title_with_llm(pico: Dict[str, str]) -> str:
     """)
     
     try:
-        response = llm.invoke(prompt.format(
+        response = get_llm().invoke(prompt.format(
             population=pico.get("P", ""),
             intervention=pico.get("I", ""),
             comparison=pico.get("C", ""),

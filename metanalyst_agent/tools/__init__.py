@@ -25,7 +25,7 @@ from .analysis_tools import (
     create_forest_plot,
     assess_heterogeneity,
     perform_sensitivity_analysis,
-    generate_funnel_plot
+    create_funnel_plot
 )
 
 from .writing_tools import (
