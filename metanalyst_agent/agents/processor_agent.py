@@ -15,11 +15,10 @@ from ..tools.processing_tools import (
     process_article_pipeline,
 )
 from ..tools.handoff_tools import (
-    transfer_to_researcher,
-    transfer_to_retriever,
-    transfer_to_analyst,
-    transfer_to_orchestrator,
-    emergency_stop,
+    create_handoff_tool,
+    request_supervisor_intervention,
+    signal_completion,
+    request_quality_check,
 )
 
 
@@ -50,11 +49,9 @@ def create_processor_agent():
         chunk_and_vectorize,
         process_article_pipeline,
         # Handoff tools
-        transfer_to_researcher,
-        transfer_to_retriever,
-        transfer_to_analyst,
-        transfer_to_orchestrator,
-        emergency_stop,
+        request_supervisor_intervention,
+        signal_completion,
+        request_quality_check,
     ]
     
     # System prompt for processor agent
@@ -111,12 +108,11 @@ def create_processor_agent():
     - Request orchestrator help for complex processing issues
     
     TOOLS USAGE:
-    - Use extract_article_content_with_tavily for content extraction
-    - Use extract_statistical_data_with_llm for data extraction
-    - Use generate_vancouver_citation_with_llm for citations
-    - Use chunk_and_vectorize_content for text processing
-    - Use create_vector_store for building searchable indexes
-    - Use process_article_complete for end-to-end processing
+            - Use extract_article_content for content extraction
+        - Use extract_statistical_data for data extraction
+        - Use generate_vancouver_citation for citations
+        - Use chunk_and_vectorize for text processing
+        - Use process_article_pipeline for end-to-end processing
     
     COMMUNICATION:
     - Report processing progress and success rates

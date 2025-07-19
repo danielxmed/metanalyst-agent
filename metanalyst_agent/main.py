@@ -18,9 +18,10 @@ from langgraph.store.memory import InMemoryStore
 
 from .config.settings import settings
 from .state.meta_analysis_state import MetaAnalysisState, create_initial_state
-from .agents.orchestrator_agent import create_orchestrator_agent, generate_pico_from_query
-from .agents.research_agent import create_research_agent
-from .agents.processor_agent import create_processor_agent
+# Lazy imports to avoid circular dependencies and missing function errors
+# from .agents.orchestrator_agent import create_orchestrator_agent, generate_pico_from_query
+# from .agents.research_agent import create_research_agent
+# from .agents.processor_agent import create_processor_agent
 
 
 class MetanalystAgent:
@@ -61,13 +62,37 @@ class MetanalystAgent:
             self.checkpointer = MemorySaver()
             self.store = InMemoryStore()
         
-        # Initialize agents
-        self.orchestrator_agent = create_orchestrator_agent()
-        self.research_agent = create_research_agent()
-        self.processor_agent = create_processor_agent()
+        # Initialize agents (lazy loading)
+        self._orchestrator_agent = None
+        self._research_agent = None
+        self._processor_agent = None
         
         # Build the main graph
         self.graph = self._build_graph()
+    
+    @property
+    def orchestrator_agent(self):
+        """Lazy loading for orchestrator agent"""
+        if self._orchestrator_agent is None:
+            from .agents.orchestrator_agent import create_orchestrator_agent
+            self._orchestrator_agent = create_orchestrator_agent()
+        return self._orchestrator_agent
+    
+    @property
+    def research_agent(self):
+        """Lazy loading for research agent"""
+        if self._research_agent is None:
+            from .agents.research_agent import create_research_agent
+            self._research_agent = create_research_agent()
+        return self._research_agent
+    
+    @property
+    def processor_agent(self):
+        """Lazy loading for processor agent"""
+        if self._processor_agent is None:
+            from .agents.processor_agent import create_processor_agent
+            self._processor_agent = create_processor_agent()
+        return self._processor_agent
         
         print("🔬 Metanalyst-Agent initialized successfully!")
         if debug:

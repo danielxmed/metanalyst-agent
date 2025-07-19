@@ -10,17 +10,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.prebuilt import create_react_agent
 
 from ..config.settings import settings
-from ..state.meta_analysis_state import MetaAnalysisState, update_agent_iteration, check_iteration_limits
+from ..state.meta_analysis_state import MetaAnalysisState
+from ..state.iteration_state import update_agent_performance
 from ..tools.handoff_tools import (
-    transfer_to_researcher,
-    transfer_to_processor,
-    transfer_to_retriever,
-    transfer_to_analyst,
-    transfer_to_writer,
-    transfer_to_reviewer,
-    transfer_to_editor,
-    emergency_stop,
-    request_human_intervention,
+    create_handoff_tool,
+    request_supervisor_intervention,
+    signal_completion,
+    request_quality_check,
 )
 
 
