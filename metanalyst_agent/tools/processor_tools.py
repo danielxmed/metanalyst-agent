@@ -68,7 +68,7 @@ def extract_article_content(url: str) -> Dict[str, Any]:
     
     try:
         # Use Tavily Extract for comprehensive content extraction
-        extract_result = tavily_client.extract(url)
+        extract_result = get_tavily_client().extract(url)
         
         # Clean and structure the extracted content
         content = {
@@ -257,7 +257,7 @@ def extract_statistical_data(
     """
     
     try:
-        response = llm.invoke(prompt)
+        response = get_llm().invoke(prompt)
         
         # Parse JSON response
         statistical_data = json.loads(response.content)
@@ -380,7 +380,7 @@ def generate_vancouver_citation(article_data: Dict[str, Any]) -> str:
     """
     
     try:
-        response = llm.invoke(prompt)
+        response = get_llm().invoke(prompt)
         citation = response.content.strip()
         
         # Add citation number placeholder
@@ -460,7 +460,7 @@ def process_article_metadata(article_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     
     try:
-        response = llm.invoke(prompt)
+        response = get_llm().invoke(prompt)
         metadata = json.loads(response.content)
         
         # Add processing information
