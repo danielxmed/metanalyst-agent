@@ -1,6 +1,32 @@
 """
-Tools module for the Metanalyst Agent system.
-
-This module contains all the tools used by different agents in the system,
-organized by agent type for better maintainability.
+Ferramentas para o sistema metanalyst-agent.
+Contém todas as ferramentas utilizadas pelos agentes especializados.
 """
+
+from .tavily_tools import (
+    search_scientific_literature,
+    extract_article_content,
+    search_with_pico,
+    TavilyTools
+)
+
+from .processing_tools import (
+    extract_study_data,
+    create_study_chunks,
+    generate_citation,
+    ProcessingTools
+)
+
+__all__ = [
+    # Tavily tools
+    "search_scientific_literature",
+    "extract_article_content", 
+    "search_with_pico",
+    "TavilyTools",
+    
+    # Processing tools
+    "extract_study_data",
+    "create_study_chunks",
+    "generate_citation",
+    "ProcessingTools"
+]

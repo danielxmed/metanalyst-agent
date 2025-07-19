@@ -1,291 +1,314 @@
 """
-Data schemas for the Metanalyst Agent system.
-
-This module defines the structured data types used throughout the workflow,
-including PICO, extracted papers, analysis results, and other domain-specific schemas.
+Schemas Pydantic para dados estruturados do sistema de meta-análise.
+Define modelos para extração de dados, análises estatísticas e relatórios.
 """
 
-from typing import TypedDict, List, Dict, Optional, Union, Any
+from typing import List, Dict, Any, Optional, Union
+from pydantic import BaseModel, Field, validator
 from datetime import datetime
 from enum import Enum
 
 
-class PICO(TypedDict):
-    """
-    PICO structure for defining research questions.
-    
-    PICO (Patient/Population, Intervention, Comparison, Outcome) is the
-    standard framework for formulating clinical research questions.
-    """
-    patient: str        # Patient/Population description
-    intervention: str   # Intervention being studied
-    comparison: str     # Comparison/Control group
-    outcome: str        # Outcome being measured
-
-
-class PaperMetadata(TypedDict):
-    """Metadata for a scientific paper."""
-    authors: List[str]
-    year: Optional[int]
-    journal: Optional[str]
-    doi: Optional[str]
-    pmid: Optional[str]
-    volume: Optional[str]
-    issue: Optional[str]
-    pages: Optional[str]
-    publication_type: Optional[str]
-    impact_factor: Optional[float]
-
-
-class StatisticalData(TypedDict):
-    """Statistical data extracted from papers."""
-    sample_size: Optional[int]
-    control_group_size: Optional[int]
-    intervention_group_size: Optional[int]
-    relative_risk: Optional[float]
-    odds_ratio: Optional[float]
-    hazard_ratio: Optional[float]
-    confidence_interval: Optional[List[float]]  # [lower, upper]
-    p_value: Optional[float]
-    effect_size: Optional[float]
-    standard_error: Optional[float]
-    variance: Optional[float]
-    mean_difference: Optional[float]
-    standardized_mean_difference: Optional[float]
-    chi_square: Optional[float]
-    degrees_of_freedom: Optional[int]
-    heterogeneity_i2: Optional[float]
-    heterogeneity_p: Optional[float]
-
-
-class ExtractedPaper(TypedDict):
-    """
-    Structure for papers extracted from URLs.
-    
-    Contains the full processed information from a scientific paper,
-    including content, metadata, and extracted statistical data.
-    """
-    paper_id: str                           # Unique identifier
-    title: str                              # Paper title
-    abstract: str                           # Abstract text
-    content: str                            # Full processed content
-    summary: str                            # Objective summary
-    url: str                                # Original URL
-    reference: str                          # Vancouver-style reference
-    metadata: PaperMetadata                 # Paper metadata
-    statistics: StatisticalData             # Extracted statistical data
-    quality_score: Optional[float]          # Quality assessment score
-    inclusion_criteria_met: bool            # Whether paper meets inclusion criteria
-    extraction_timestamp: str               # When data was extracted
-    extractor_version: str                  # Version of extraction logic used
-
-
-class SearchResult(TypedDict):
-    """Result from literature search."""
-    query: str
-    url: str
-    title: str
-    snippet: str
-    score: Optional[float]
-    domain: str
-    search_timestamp: str
-
-
-class VectorChunk(TypedDict):
-    """Chunk of text with vector embedding and metadata."""
-    chunk_id: str
-    text: str
-    paper_id: str
-    paper_reference: str
-    chunk_index: int
-    embedding: Optional[List[float]]
-    metadata: Dict[str, Any]
-
-
-class RetrievalResult(TypedDict):
-    """Result from vector similarity search."""
-    chunk: VectorChunk
-    similarity_score: float
-    rank: int
-
-
-class ReviewFeedback(TypedDict):
-    """Feedback from the reviewer agent."""
-    overall_quality: float                  # 0-10 scale
-    needs_more_research: bool               # Whether additional searches are needed
-    missing_aspects: List[str]              # Missing aspects in the report
-    suggested_improvements: List[str]       # Specific improvement suggestions
-    approval_status: str                    # "approved", "needs_revision", "rejected"
-    reviewer_comments: str                  # Detailed comments
-    statistical_concerns: List[str]         # Concerns about statistical analysis
-    methodology_concerns: List[str]         # Concerns about methodology
-
-
-class MetaAnalysisResult(TypedDict):
-    """Results from statistical meta-analysis."""
-    pooled_effect_size: float
-    pooled_confidence_interval: List[float]
-    pooled_p_value: float
-    heterogeneity_i2: float
-    heterogeneity_p_value: float
-    tau_squared: Optional[float]            # Between-study variance
-    prediction_interval: Optional[List[float]]
-    studies_included: int
-    total_sample_size: int
-    effect_measure: str                     # "RR", "OR", "MD", "SMD", etc.
-    analysis_method: str                    # "fixed", "random"
-    subgroup_analyses: List[Dict[str, Any]]
-    sensitivity_analyses: List[Dict[str, Any]]
-    publication_bias_tests: Dict[str, Any]
-
-
-class Visualization(TypedDict):
-    """Visualization data and metadata."""
-    type: str                               # "forest_plot", "funnel_plot", "table", etc.
-    file_path: str                          # Path to generated file
-    title: str
-    description: str
-    data_source: List[str]                  # Source paper IDs
-    creation_timestamp: str
-
-
-class QualityAssessment(TypedDict):
-    """Quality assessment for individual studies."""
-    paper_id: str
-    assessment_tool: str                    # "Cochrane", "Newcastle-Ottawa", etc.
-    risk_of_bias: Dict[str, str]           # Domain -> "low", "high", "unclear"
-    overall_quality: str                   # "high", "moderate", "low"
-    quality_score: Optional[float]         # Numerical score if applicable
-    assessor_notes: str
-
-
-class ReportSection(TypedDict):
-    """Individual section of the meta-analysis report."""
-    section_id: str
-    title: str
-    content: str
-    subsections: List['ReportSection']
-    references: List[str]                   # Paper IDs referenced
-    tables: List[str]                       # Table IDs
-    figures: List[str]                      # Figure IDs
-
-
-class FinalReport(TypedDict):
-    """Complete meta-analysis report structure."""
-    title: str
-    abstract: str
-    sections: List[ReportSection]
-    references: List[ExtractedPaper]
-    tables: List[Dict[str, Any]]
-    figures: List[Visualization]
-    appendices: List[Dict[str, Any]]
-    metadata: Dict[str, Any]
-    generation_timestamp: str
-    word_count: int
-    page_count: Optional[int]
-
-
-# Enums for standardized values
-class StudyType(Enum):
-    """Types of studies that can be included."""
+class StudyType(str, Enum):
+    """Tipos de estudos científicos."""
     RCT = "randomized_controlled_trial"
     COHORT = "cohort_study"
     CASE_CONTROL = "case_control_study"
     CROSS_SECTIONAL = "cross_sectional_study"
     SYSTEMATIC_REVIEW = "systematic_review"
     META_ANALYSIS = "meta_analysis"
-    CASE_SERIES = "case_series"
     CASE_REPORT = "case_report"
+    OTHER = "other"
 
 
-class EffectMeasure(Enum):
-    """Types of effect measures for meta-analysis."""
-    RELATIVE_RISK = "RR"
-    ODDS_RATIO = "OR"
-    HAZARD_RATIO = "HR"
-    MEAN_DIFFERENCE = "MD"
-    STANDARDIZED_MEAN_DIFFERENCE = "SMD"
-    RISK_DIFFERENCE = "RD"
-    INCIDENCE_RATE_RATIO = "IRR"
+class OutcomeType(str, Enum):
+    """Tipos de desfechos."""
+    BINARY = "binary"
+    CONTINUOUS = "continuous"
+    TIME_TO_EVENT = "time_to_event"
+    ORDINAL = "ordinal"
 
 
-class AnalysisMethod(Enum):
-    """Statistical methods for meta-analysis."""
-    FIXED_EFFECTS = "fixed"
-    RANDOM_EFFECTS = "random"
-    MIXED_EFFECTS = "mixed"
-
-
-# Helper functions for schema validation and creation
-def create_pico(patient: str, intervention: str, comparison: str, outcome: str) -> PICO:
-    """Create a validated PICO structure."""
-    return PICO(
-        patient=patient.strip(),
-        intervention=intervention.strip(),
-        comparison=comparison.strip(),
-        outcome=outcome.strip()
-    )
-
-
-def create_empty_statistical_data() -> StatisticalData:
-    """Create an empty statistical data structure with None values."""
-    return StatisticalData(
-        sample_size=None,
-        control_group_size=None,
-        intervention_group_size=None,
-        relative_risk=None,
-        odds_ratio=None,
-        hazard_ratio=None,
-        confidence_interval=None,
-        p_value=None,
-        effect_size=None,
-        standard_error=None,
-        variance=None,
-        mean_difference=None,
-        standardized_mean_difference=None,
-        chi_square=None,
-        degrees_of_freedom=None,
-        heterogeneity_i2=None,
-        heterogeneity_p=None
-    )
-
-
-def create_paper_template(url: str, title: str = "") -> ExtractedPaper:
-    """Create a template ExtractedPaper with default values."""
-    from uuid import uuid4
+class PICO(BaseModel):
+    """Estrutura PICO para definição da questão de pesquisa."""
     
-    return ExtractedPaper(
-        paper_id=str(uuid4()),
-        title=title,
-        abstract="",
-        content="",
-        summary="",
-        url=url,
-        reference="",
-        metadata=PaperMetadata(
-            authors=[],
-            year=None,
-            journal=None,
-            doi=None,
-            pmid=None,
-            volume=None,
-            issue=None,
-            pages=None,
-            publication_type=None,
-            impact_factor=None
-        ),
-        statistics=create_empty_statistical_data(),
-        quality_score=None,
-        inclusion_criteria_met=False,
-        extraction_timestamp=datetime.now().isoformat(),
-        extractor_version="1.0.0"
-    )
+    population: str = Field(..., description="População estudada")
+    intervention: str = Field(..., description="Intervenção")
+    comparison: str = Field(..., description="Comparação ou controle")
+    outcome: str = Field(..., description="Desfecho de interesse")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "population": "Pacientes com diabetes tipo 2",
+                "intervention": "Metformina",
+                "comparison": "Placebo",
+                "outcome": "Controle glicêmico (HbA1c)"
+            }
+        }
 
 
-def validate_pico(pico: Dict[str, str]) -> bool:
-    """Validate that a PICO structure has all required fields."""
-    required_fields = ["patient", "intervention", "comparison", "outcome"]
-    return all(
-        field in pico and isinstance(pico[field], str) and len(pico[field].strip()) > 0
-        for field in required_fields
-    )
+class StudyCharacteristics(BaseModel):
+    """Características extraídas de um estudo."""
+    
+    title: str
+    authors: List[str]
+    journal: str
+    year: int
+    doi: Optional[str] = None
+    pmid: Optional[str] = None
+    
+    study_type: StudyType
+    sample_size: int
+    population_description: str
+    
+    intervention_group: Dict[str, Any]
+    control_group: Dict[str, Any]
+    
+    primary_outcome: str
+    secondary_outcomes: List[str] = []
+    
+    follow_up_duration: Optional[str] = None
+    
+    @validator('year')
+    def validate_year(cls, v):
+        current_year = datetime.now().year
+        if v < 1900 or v > current_year:
+            raise ValueError(f'Ano deve estar entre 1900 e {current_year}')
+        return v
+
+
+class OutcomeData(BaseModel):
+    """Dados de desfecho extraídos de um estudo."""
+    
+    outcome_name: str
+    outcome_type: OutcomeType
+    
+    # Para desfechos binários
+    intervention_events: Optional[int] = None
+    intervention_total: Optional[int] = None
+    control_events: Optional[int] = None
+    control_total: Optional[int] = None
+    
+    # Para desfechos contínuos
+    intervention_mean: Optional[float] = None
+    intervention_sd: Optional[float] = None
+    intervention_n: Optional[int] = None
+    control_mean: Optional[float] = None
+    control_sd: Optional[float] = None
+    control_n: Optional[int] = None
+    
+    # Medidas de efeito reportadas
+    effect_measure: Optional[str] = None  # OR, RR, MD, SMD, etc.
+    effect_size: Optional[float] = None
+    confidence_interval_lower: Optional[float] = None
+    confidence_interval_upper: Optional[float] = None
+    p_value: Optional[float] = None
+    
+    units: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class QualityAssessment(BaseModel):
+    """Avaliação de qualidade de um estudo."""
+    
+    study_id: str
+    assessment_tool: str = "custom"  # ROB2, Newcastle-Ottawa, etc.
+    
+    # Domínios de risco de viés
+    randomization: Optional[str] = None  # low, high, unclear
+    allocation_concealment: Optional[str] = None
+    blinding_participants: Optional[str] = None
+    blinding_outcome: Optional[str] = None
+    incomplete_data: Optional[str] = None
+    selective_reporting: Optional[str] = None
+    other_bias: Optional[str] = None
+    
+    overall_quality: str = Field(..., description="low, moderate, high")
+    quality_score: float = Field(..., ge=0, le=10)
+    
+    notes: Optional[str] = None
+
+
+class ExtractedStudy(BaseModel):
+    """Dados completos extraídos de um estudo."""
+    
+    url: str
+    extraction_timestamp: datetime = Field(default_factory=datetime.now)
+    
+    characteristics: StudyCharacteristics
+    outcomes: List[OutcomeData]
+    quality_assessment: QualityAssessment
+    
+    # Dados brutos para referência
+    full_text_available: bool
+    abstract: str
+    key_findings: List[str]
+    limitations: List[str]
+    
+    # Metadados de processamento
+    processing_notes: List[str] = []
+    confidence_score: float = Field(ge=0, le=1, description="Confiança na extração")
+
+
+class StatisticalAnalysis(BaseModel):
+    """Resultados de análise estatística."""
+    
+    outcome_name: str
+    analysis_type: str  # fixed_effect, random_effect
+    
+    # Resultados da meta-análise
+    pooled_effect: float
+    confidence_interval_lower: float
+    confidence_interval_upper: float
+    p_value: float
+    
+    # Heterogeneidade
+    i_squared: float = Field(ge=0, le=100)
+    tau_squared: Optional[float] = None
+    q_statistic: float
+    q_p_value: float
+    
+    # Número de estudos
+    number_of_studies: int
+    total_participants: int
+    
+    # Forest plot data
+    forest_plot_data: List[Dict[str, Any]]
+    
+    # Análises de sensibilidade
+    sensitivity_analyses: List[Dict[str, Any]] = []
+    
+    # Avaliação de viés de publicação
+    publication_bias: Optional[Dict[str, Any]] = None
+
+
+class Citation(BaseModel):
+    """Citação em formato Vancouver."""
+    
+    study_id: str
+    authors: List[str]
+    title: str
+    journal: str
+    year: int
+    volume: Optional[str] = None
+    issue: Optional[str] = None
+    pages: Optional[str] = None
+    doi: Optional[str] = None
+    pmid: Optional[str] = None
+    
+    def to_vancouver(self) -> str:
+        """Converte para formato Vancouver."""
+        # Formatar autores
+        if len(self.authors) <= 6:
+            author_str = ", ".join(self.authors)
+        else:
+            author_str = ", ".join(self.authors[:6]) + ", et al"
+        
+        # Construir citação
+        citation = f"{author_str}. {self.title}. {self.journal}. {self.year}"
+        
+        if self.volume:
+            citation += f";{self.volume}"
+            if self.issue:
+                citation += f"({self.issue})"
+        
+        if self.pages:
+            citation += f":{self.pages}"
+        
+        citation += "."
+        
+        if self.doi:
+            citation += f" doi:{self.doi}"
+        
+        return citation
+
+
+class MetaAnalysisReport(BaseModel):
+    """Relatório completo de meta-análise."""
+    
+    title: str
+    pico: PICO
+    
+    # Metodologia
+    search_strategy: str
+    inclusion_criteria: List[str]
+    exclusion_criteria: List[str]
+    databases_searched: List[str]
+    
+    # Resultados
+    studies_found: int
+    studies_included: int
+    studies_excluded: int
+    exclusion_reasons: Dict[str, int]
+    
+    # Características dos estudos
+    study_characteristics_summary: Dict[str, Any]
+    
+    # Análises estatísticas
+    statistical_analyses: List[StatisticalAnalysis]
+    
+    # Qualidade da evidência
+    overall_quality: str
+    grade_assessment: Optional[Dict[str, str]] = None
+    
+    # Conclusões
+    main_findings: List[str]
+    clinical_implications: List[str]
+    limitations: List[str]
+    recommendations: List[str]
+    
+    # Metadados
+    generated_at: datetime = Field(default_factory=datetime.now)
+    citations: List[Citation]
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+
+class VectorChunk(BaseModel):
+    """Chunk de texto vetorizado."""
+    
+    chunk_id: str
+    study_id: str
+    content: str
+    embedding: List[float]
+    
+    # Metadados do chunk
+    section: str  # abstract, methods, results, discussion
+    start_char: int
+    end_char: int
+    
+    # Referência para busca
+    study_title: str
+    study_authors: List[str]
+    study_year: int
+    
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class SearchResult(BaseModel):
+    """Resultado de busca de literatura."""
+    
+    url: str
+    title: str
+    authors: List[str] = []
+    abstract: str = ""
+    year: Optional[int] = None
+    journal: Optional[str] = None
+    doi: Optional[str] = None
+    
+    # Scores de relevância
+    relevance_score: float = Field(ge=0, le=1)
+    pico_match_score: float = Field(ge=0, le=1)
+    
+    # Metadados da busca
+    search_query: str
+    search_domain: str
+    found_at: datetime = Field(default_factory=datetime.now)
+    
+    @validator('relevance_score', 'pico_match_score')
+    def validate_scores(cls, v):
+        return round(v, 3)

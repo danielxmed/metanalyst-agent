@@ -1,197 +1,237 @@
 """
-State definitions for the Metanalyst Agent system.
-
-This module defines the core state structure used throughout the multi-agent
-meta-analysis workflow, including the main MetanalysisState and related schemas.
+Estado compartilhado para o sistema de meta-análise multi-agente.
+Implementa memória de curto e longo prazo usando LangGraph.
 """
 
-from typing import TypedDict, Annotated, List, Dict, Optional, Any
-from langgraph.graph.message import add_messages
-from langchain_core.messages import BaseMessage
-import operator
+from typing import TypedDict, List, Dict, Any, Optional, Literal, Annotated
 from datetime import datetime
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
+import uuid
 
 
-class MetanalysisState(TypedDict):
+class MetaAnalysisState(TypedDict):
     """
-    Main state schema for the metanalyst-agent workflow.
+    Estado compartilhado para o sistema de meta-análise.
     
-    This state is shared across all agents and maintains the complete
-    context of the meta-analysis process from start to finish.
+    Este estado é mantido pelo orquestrador central e compartilhado
+    entre todos os agentes especializados na arquitetura hub-and-spoke.
     """
     
-    # Message history for agent communication
-    messages: Annotated[List[BaseMessage], add_messages]
-    
-    # Core meta-analysis components
-    pico: Optional[Dict[str, str]]  # PICO structure
-    user_request: Optional[str]     # Original natural language request
-    research_query: Optional[str]   # Generated search query
-    
-    # Literature search results
-    search_results: Annotated[List[Dict], operator.add]
-    url_not_processed: Annotated[List[str], operator.add]  # URLs waiting to be processed
-    url_processed: Annotated[List[str], operator.add]      # URLs already processed
-    
-    # Extracted and processed papers (legacy - will be removed)
-    extracted_papers: Annotated[List[Dict], operator.add]
-    processed_papers: Annotated[List[Dict], operator.add]
-    
-    # Vector store and retrieval
-    vector_store_ready: bool
-    vector_store_path: Optional[str]
-    chunks_created: Optional[int]
-    
-    # Report generation
-    relevant_chunks: Annotated[List[Dict], operator.add]
-    report_draft: Optional[str]
-    report_approved: bool
-    review_feedback: Optional[Dict[str, Any]]
-    
-    # Statistical analysis
-    statistical_analysis: Optional[Dict[str, Any]]
-    forest_plot_path: Optional[str]
-    analysis_tables: Annotated[List[Dict], operator.add]
-    
-    # Final output
-    final_report: Optional[str]
-    final_report_path: Optional[str]
-    
-    # Workflow control
-    current_step: str
+    # === IDENTIFICAÇÃO E CONTROLE ===
+    meta_analysis_id: str
+    thread_id: str
+    current_phase: Literal[
+        "pico_definition", 
+        "search", 
+        "extraction", 
+        "vectorization", 
+        "analysis", 
+        "writing", 
+        "review", 
+        "editing",
+        "completed"
+    ]
     current_agent: Optional[str]
-    step_history: Annotated[List[str], operator.add]
-    error_log: Annotated[List[Dict], operator.add]
     
-    # Orchestrator control
-    max_iterations: Optional[int]
-    orchestrator_iterations: Optional[int]
-    total_iterations: Optional[int]
-    last_decision: Optional[str]
+    # === PICO E PESQUISA ===
+    pico: Dict[str, str]  # {P: Population, I: Intervention, C: Comparison, O: Outcome}
+    search_queries: List[str]
+    search_domains: List[str]
+    user_request: str  # Solicitação original do usuário
     
-    # Metadata
-    workflow_id: Optional[str]
-    started_at: Optional[str]
-    completed_at: Optional[str]
-    workflow_complete: bool
-    total_papers_found: int
-    total_papers_processed: int
+    # === URLs E PROCESSAMENTO ===
+    candidate_urls: List[Dict[str, Any]]  # [{url, title, relevance_score, domain}]
+    processing_queue: List[str]  # URLs aguardando processamento
+    processed_articles: List[Dict[str, Any]]  # Artigos processados com dados extraídos
+    failed_urls: List[Dict[str, str]]  # [{url, error, timestamp}]
+    
+    # === EXTRAÇÃO E VETORIZAÇÃO ===
+    extracted_data: List[Dict[str, Any]]  # Dados estruturados extraídos
+    vector_store_id: Optional[str]  # ID do vector store no PostgreSQL Store
+    vector_store_status: Dict[str, Any]  # Status da vetorização
+    chunk_count: int  # Número total de chunks criados
+    
+    # === ANÁLISE E RESULTADOS ===
+    retrieval_results: List[Dict[str, Any]]  # Resultados da busca semântica
+    statistical_analysis: Dict[str, Any]  # Análises estatísticas realizadas
+    forest_plots: List[Dict[str, Any]]  # Dados para forest plots
+    quality_assessments: Dict[str, float]  # Avaliações de qualidade dos estudos
+    
+    # === RELATÓRIOS E REVISÕES ===
+    draft_report: Optional[str]  # Rascunho do relatório em HTML
+    review_feedback: List[Dict[str, str]]  # Feedback do revisor
+    final_report: Optional[str]  # Relatório final em HTML
+    citations: List[Dict[str, str]]  # Citações em formato Vancouver
+    
+    # === MENSAGENS E LOGS ===
+    messages: Annotated[List[BaseMessage], add_messages]  # Histórico de mensagens
+    agent_logs: List[Dict[str, Any]]  # Logs detalhados por agente
+    
+    # === METADADOS ===
+    created_at: datetime
+    updated_at: datetime
+    total_articles_processed: int
+    execution_time: Dict[str, float]  # Tempo de execução por fase
+    
+    # === CONFIGURAÇÕES ===
+    config: Dict[str, Any]  # Parâmetros configuráveis do sistema
 
 
-class WorkflowMetadata(TypedDict):
-    """Metadata for tracking workflow execution."""
-    workflow_id: str
-    started_at: str
-    current_step: str
-    steps_completed: List[str]
-    estimated_completion: Optional[str]
-    quality_score: Optional[float]
-
-
-def create_initial_state(
-    pico: Optional[Dict[str, str]] = None,
-    workflow_id: Optional[str] = None
-) -> MetanalysisState:
+def create_initial_state(user_request: str, config: Dict[str, Any] = None) -> MetaAnalysisState:
     """
-    Create an initial state for a new meta-analysis workflow.
+    Cria o estado inicial para uma nova meta-análise.
     
     Args:
-        pico: Optional PICO structure to start with
-        workflow_id: Optional workflow identifier
+        user_request: Solicitação do usuário em linguagem natural
+        config: Configurações opcionais do sistema
         
     Returns:
-        Initial MetanalysisState with default values
+        Estado inicial da meta-análise
     """
-    from uuid import uuid4
+    now = datetime.now()
+    analysis_id = str(uuid.uuid4())
+    thread_id = f"metanalysis_{analysis_id[:8]}"
     
-    return MetanalysisState(
-        messages=[],
-        pico=pico,
-        user_request=None,
-        research_query=None,
-        search_results=[],
-        url_not_processed=[],
-        url_processed=[],
-        extracted_papers=[],
-        processed_papers=[],
-        vector_store_ready=False,
-        vector_store_path=None,
-        chunks_created=None,
-        relevant_chunks=[],
-        report_draft=None,
-        report_approved=False,
-        review_feedback=None,
-        statistical_analysis=None,
-        forest_plot_path=None,
-        analysis_tables=[],
-        final_report=None,
-        final_report_path=None,
-        current_step="initialize",
+    return MetaAnalysisState(
+        # Identificação
+        meta_analysis_id=analysis_id,
+        thread_id=thread_id,
+        current_phase="pico_definition",
         current_agent=None,
-        step_history=[],
-        error_log=[],
-        max_iterations=None,
-        orchestrator_iterations=None,
-        total_iterations=None,
-        last_decision=None,
-        workflow_id=workflow_id or str(uuid4()),
-        started_at=datetime.now().isoformat(),
-        completed_at=None,
-        workflow_complete=False,
-        total_papers_found=0,
-        total_papers_processed=0
+        
+        # PICO e pesquisa
+        pico={},
+        search_queries=[],
+        search_domains=[],
+        user_request=user_request,
+        
+        # URLs e processamento
+        candidate_urls=[],
+        processing_queue=[],
+        processed_articles=[],
+        failed_urls=[],
+        
+        # Extração e vetorização
+        extracted_data=[],
+        vector_store_id=None,
+        vector_store_status={},
+        chunk_count=0,
+        
+        # Análise e resultados
+        retrieval_results=[],
+        statistical_analysis={},
+        forest_plots=[],
+        quality_assessments={},
+        
+        # Relatórios e revisões
+        draft_report=None,
+        review_feedback=[],
+        final_report=None,
+        citations=[],
+        
+        # Mensagens e logs
+        messages=[],
+        agent_logs=[],
+        
+        # Metadados
+        created_at=now,
+        updated_at=now,
+        total_articles_processed=0,
+        execution_time={},
+        
+        # Configurações
+        config=config or {}
     )
 
 
-def update_state_step(
-    state: MetanalysisState, 
-    new_step: str, 
-    agent: Optional[str] = None
+def update_state_phase(
+    state: MetaAnalysisState, 
+    new_phase: str, 
+    agent_name: str = None
 ) -> Dict[str, Any]:
     """
-    Helper function to update workflow step tracking.
+    Atualiza a fase atual do estado e registra a mudança.
     
     Args:
-        state: Current state
-        new_step: New step identifier
-        agent: Optional agent name
+        state: Estado atual
+        new_phase: Nova fase
+        agent_name: Nome do agente responsável pela mudança
         
     Returns:
-        State update dictionary
+        Dicionário com atualizações do estado
     """
     return {
-        "current_step": new_step,
-        "current_agent": agent,
-        "step_history": [new_step]
+        "current_phase": new_phase,
+        "current_agent": agent_name,
+        "updated_at": datetime.now(),
+        "agent_logs": state.get("agent_logs", []) + [{
+            "timestamp": datetime.now().isoformat(),
+            "agent": agent_name or "system",
+            "action": "phase_change",
+            "from_phase": state.get("current_phase"),
+            "to_phase": new_phase
+        }]
     }
 
 
-def log_error(
-    state: MetanalysisState,
-    error_type: str,
-    error_message: str,
-    agent: Optional[str] = None
+def add_agent_log(
+    state: MetaAnalysisState,
+    agent_name: str,
+    action: str,
+    details: Dict[str, Any] = None,
+    status: str = "success"
 ) -> Dict[str, Any]:
     """
-    Helper function to log errors in the workflow.
+    Adiciona log de ação de agente ao estado.
     
     Args:
-        state: Current state
-        error_type: Type of error
-        error_message: Error description
-        agent: Optional agent that encountered the error
+        state: Estado atual
+        agent_name: Nome do agente
+        action: Ação realizada
+        details: Detalhes adicionais
+        status: Status da ação (success, error, warning)
         
     Returns:
-        State update dictionary with error logged
+        Dicionário com atualização dos logs
     """
-    error_entry = {
+    log_entry = {
         "timestamp": datetime.now().isoformat(),
-        "type": error_type,
-        "message": error_message,
-        "agent": agent,
-        "step": state.get("current_step", "unknown")
+        "agent": agent_name,
+        "action": action,
+        "status": status,
+        "details": details or {}
     }
     
     return {
-        "error_log": [error_entry]
+        "agent_logs": state.get("agent_logs", []) + [log_entry],
+        "updated_at": datetime.now()
+    }
+
+
+def get_state_summary(state: MetaAnalysisState) -> Dict[str, Any]:
+    """
+    Gera resumo do estado atual para debug e monitoramento.
+    
+    Args:
+        state: Estado atual
+        
+    Returns:
+        Resumo do estado
+    """
+    return {
+        "meta_analysis_id": state["meta_analysis_id"],
+        "current_phase": state["current_phase"],
+        "current_agent": state["current_agent"],
+        "urls_found": len(state["candidate_urls"]),
+        "urls_processed": len(state["processed_articles"]),
+        "urls_failed": len(state["failed_urls"]),
+        "chunks_created": state["chunk_count"],
+        "has_vector_store": bool(state["vector_store_id"]),
+        "has_analysis": bool(state["statistical_analysis"]),
+        "has_report": bool(state["final_report"]),
+        "total_messages": len(state["messages"]),
+        "execution_time": state["execution_time"],
+        "created_at": state["created_at"].isoformat(),
+        "updated_at": state["updated_at"].isoformat()
     }

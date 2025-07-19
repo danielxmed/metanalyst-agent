@@ -1,331 +1,419 @@
 """
-Central Orchestrator Agent for the Metanalyst Agent system.
-
-This module implements the hub of the hub-and-spoke architecture, responsible for
-coordinating all specialized agents and managing the meta-analysis workflow.
-
-The orchestrator uses LLM-based decision making instead of hard-coded heuristics,
-making it truly agentic and adaptable to different scenarios.
+Agente Orquestrador Central - Hub da arquitetura Hub-and-Spoke.
+Responsável por analisar o estado atual e decidir qual agente especializado invocar.
 """
 
-from typing import Dict, Any, Optional
-from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.prebuilt import create_react_agent
-from langchain_core.prompts import ChatPromptTemplate
-import json
+import logging
+from typing import Dict, Any, Literal
 from datetime import datetime
 
-from ..models.state import MetanalysisState, update_state_step, log_error
-from ..models.schemas import PICO, validate_pico
-from ..utils.config import get_config
-from ..tools.orchestrator_tools import ORCHESTRATOR_TOOLS
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langgraph.types import Command
+
+from src.models.state import MetaAnalysisState, update_state_phase, add_agent_log
+from src.utils.config import Config
+
+logger = logging.getLogger(__name__)
 
 
-def create_orchestrator_agent():
+class OrchestratorAgent:
     """
-    Create the central orchestrator agent with LLM-based decision making.
+    Agente Orquestrador Central.
     
-    This orchestrator uses a sophisticated prompt to guide the LLM in making
-    intelligent decisions about which agent to invoke next, rather than
-    relying on hard-coded heuristics.
-    
-    Returns:
-        Configured orchestrator agent with all tools
-    """
-    config = get_config()
-    
-    # Enhanced system prompt for LLM-based decision making
-    system_prompt = f"""
-    You are the central orchestrator of an automated medical meta-analysis system.
-    
-    🎯 YOUR ROLE:
-    You coordinate 9 specialized agents in a hub-and-spoke architecture to conduct
-    complete medical meta-analyses from PICO definition to final report generation.
-    
-    🧠 DECISION MAKING:
-    You analyze the current workflow state and intelligently decide which agent
-    to invoke next. You are NOT following rigid rules - you make contextual
-    decisions based on the current state and what makes most sense.
-    
-    🛠️ AVAILABLE TOOLS:
-    1. define_pico_structure - Define research question (PICO structure)
-    2. generate_research_query - Create optimized search queries
-    3. call_researcher_agent - Search scientific literature
-    4. call_processor_agent - Process URLs (extract + vectorize in one step)
-    5. call_writer_agent - Generate structured report drafts
-    6. call_reviewer_agent - Review report quality
-    7. call_analyst_agent - Perform statistical analyses
-    8. call_editor_agent - Create final integrated reports
-    9. get_workflow_status - Check workflow information
-    
-    📋 SUGGESTED WORKFLOW SEQUENCE (flexible, not rigid):
-    1. Define PICO → 2. Generate query → 3. Search literature → 
-    4. Process URLs → 5. Write draft → 6. Review → 7. Analyze → 8. Final edit
-    
-    🔄 URL PROCESSING WORKFLOW:
-    The processor agent combines extraction and vectorization:
-    - Receives url_not_processed from state
-    - Extracts content using Firecrawl API (focuses on main content)
-    - Processes markdown to structured JSON using GPT-4.1-mini
-    - Chunks content intelligently (1000 chars, 100 overlap)
-    - Generates embeddings with text-embedding-3-small
-    - Stores in local vector store
-    - Moves URLs from url_not_processed to url_processed
-    
-    🎭 DECISION PRINCIPLES:
-    - ANALYZE the current state thoroughly before deciding
-    - PRIORITIZE logical workflow progression
-    - HANDLE errors gracefully and retry when appropriate
-    - CONSIDER alternative paths when standard flow is blocked
-    - MAINTAIN context and explain your reasoning
-    - ONLY invoke ONE tool per iteration
-    
-    💡 INTELLIGENT BEHAVIORS:
-    - If a step fails, consider alternative approaches
-    - If review suggests more research, go back to researcher
-    - If data is insufficient, gather more before proceeding
-    - If analysis is incomplete, revisit previous steps
-    - Adapt to unexpected situations flexibly
-    
-    📊 CONTEXT AWARENESS:
-    - Max papers per search: {config.search.max_papers_per_search}
-    - Vector store path: {config.vector.vector_store_path}
-    - Output directory: outputs/
-    
-    🚨 CRITICAL RULES:
-    1. ALWAYS analyze the current state first
-    2. EXPLAIN your reasoning for each decision
-    3. NEVER follow rigid sequences - be adaptive
-    4. HANDLE exceptions and edge cases intelligently
-    5. MAINTAIN workflow context throughout
-    
-    Remember: You are an intelligent orchestrator, not a rule-following automaton.
-    Make smart, contextual decisions based on the current situation.
+    Implementa a lógica de decisão para navegação entre agentes especializados
+    na arquitetura hub-and-spoke. Mantém o estado global e controla o fluxo
+    da meta-análise.
     """
     
-    return create_react_agent(
-        model=config.llm.primary_model,
-        tools=ORCHESTRATOR_TOOLS,
-        prompt=system_prompt
-    )
-
-
-def orchestrator_node(state: MetanalysisState) -> Dict[str, Any]:
-    """
-    Main orchestrator node function for the workflow graph.
+    def __init__(self):
+        """Inicializa o orquestrador."""
+        self.llm = ChatOpenAI(
+            model=Config.LLM_MODEL,
+            temperature=0.1,
+            api_key=Config.OPENAI_API_KEY
+        )
+        self.name = "orchestrator"
     
-    This function presents the current state to the LLM orchestrator
-    and lets it make intelligent decisions about next steps.
-    
-    Args:
-        state: Current meta-analysis state
-        
-    Returns:
-        State updates based on orchestrator decisions
-    """
-    try:
-        # Create orchestrator agent
-        orchestrator = create_orchestrator_agent()
-        
-        # Prepare state summary for the orchestrator
-        state_summary = _create_state_summary(state)
-        
-        # Create input message with current state
-        input_message = HumanMessage(content=f"""
-        🔄 WORKFLOW STATUS UPDATE
-        
-        Current State Analysis:
-        {state_summary}
-        
-        🤔 DECISION REQUIRED:
-        Based on the current state above, analyze what needs to be done next
-        and invoke the appropriate tool to continue the meta-analysis workflow.
-        
-        Consider:
-        - What has been completed successfully?
-        - What is missing or needs attention?
-        - What would be the most logical next step?
-        - Are there any errors that need handling?
-        
-        Make your decision and invoke the appropriate tool.
-        """)
-        
-        # Get orchestrator decision
-        result = orchestrator.invoke({
-            "messages": [input_message]
-        })
-        
-        # Extract the last message (should contain tool results)
-        last_message = result["messages"][-1]
-        
-        # Log the orchestrator's decision
-        print(f"🎯 Orchestrator analyzing state and making decision...")
-        
-        # The orchestrator will have invoked a tool, and the result
-        # will be in the last message. We need to parse this and
-        # update the state accordingly.
-        
-        # For now, return a basic state update
-        return {
-            "current_agent": "orchestrator",
-            "last_orchestrator_action": datetime.now().isoformat(),
-            "orchestrator_active": True
-        }
-        
-    except Exception as e:
-        error_msg = f"Orchestrator execution failed: {str(e)}"
-        print(f"❌ {error_msg}")
-        return log_error(state, "orchestrator_error", error_msg, "orchestrator")
-
-
-def _create_state_summary(state: MetanalysisState) -> str:
-    """
-    Create a comprehensive summary of the current workflow state.
-    
-    Args:
-        state: Current meta-analysis state
-        
-    Returns:
-        Formatted state summary string
-    """
-    summary_parts = []
-    
-    # PICO Status
-    pico = state.get("pico")
-    if pico:
-        summary_parts.append(f"✅ PICO Defined: {pico}")
-    else:
-        summary_parts.append("❌ PICO: Not defined")
-    
-    # Query Status
-    query = state.get("research_query")
-    if query:
-        summary_parts.append(f"✅ Research Query: {query}")
-    else:
-        summary_parts.append("❌ Research Query: Not generated")
-    
-    # Literature Search Status
-    urls_found = state.get("urls_found", [])
-    if urls_found:
-        summary_parts.append(f"✅ URLs Found: {len(urls_found)} papers")
-    else:
-        summary_parts.append("❌ Literature Search: No URLs found")
-    
-    # Extraction Status
-    urls_processed = state.get("urls_processed", [])
-    extracted_papers = state.get("extracted_papers", [])
-    if extracted_papers:
-        summary_parts.append(f"✅ Papers Extracted: {len(extracted_papers)} papers")
-    elif urls_found and not urls_processed:
-        summary_parts.append(f"⏳ Extraction Pending: {len(urls_found)} URLs to process")
-    else:
-        summary_parts.append("❌ Content Extraction: Not started")
-    
-    # Vectorization Status
-    vector_ready = state.get("vector_store_ready", False)
-    if vector_ready:
-        vector_path = state.get("vector_store_path", "Unknown")
-        summary_parts.append(f"✅ Vector Store: Ready at {vector_path}")
-    else:
-        summary_parts.append("❌ Vector Store: Not created")
-    
-    # Report Status
-    report_draft = state.get("report_draft")
-    if report_draft:
-        summary_parts.append("✅ Report Draft: Generated")
-    else:
-        summary_parts.append("❌ Report Draft: Not created")
-    
-    # Review Status
-    review_feedback = state.get("review_feedback")
-    report_approved = state.get("report_approved", False)
-    if report_approved:
-        summary_parts.append("✅ Report Review: Approved")
-    elif review_feedback:
-        needs_more = review_feedback.get("needs_more_research", False)
-        if needs_more:
-            summary_parts.append("⚠️ Report Review: Requires more research")
-        else:
-            summary_parts.append("⏳ Report Review: Feedback received, pending approval")
-    else:
-        summary_parts.append("❌ Report Review: Not performed")
-    
-    # Analysis Status
-    statistical_analysis = state.get("statistical_analysis")
-    if statistical_analysis:
-        summary_parts.append("✅ Statistical Analysis: Completed")
-    else:
-        summary_parts.append("❌ Statistical Analysis: Not performed")
-    
-    # Final Report Status
-    final_report = state.get("final_report")
-    if final_report:
-        summary_parts.append("✅ Final Report: Completed")
-        final_path = state.get("final_report_path", "Unknown")
-        summary_parts.append(f"📄 Final Report Path: {final_path}")
-    else:
-        summary_parts.append("❌ Final Report: Not created")
-    
-    # Error Status
-    error_log = state.get("error_log", [])
-    if error_log:
-        recent_errors = error_log[-3:]  # Show last 3 errors
-        summary_parts.append(f"⚠️ Recent Errors: {len(recent_errors)} errors")
-        for error in recent_errors:
-            summary_parts.append(f"   - {error.get('type', 'unknown')}: {error.get('message', 'No details')}")
-    
-    # Workflow Progress
-    current_step = state.get("current_step", "unknown")
-    current_agent = state.get("current_agent", "unknown")
-    workflow_id = state.get("workflow_id", "unknown")
-    
-    summary_parts.extend([
-        f"📍 Current Step: {current_step}",
-        f"🤖 Last Agent: {current_agent}",
-        f"🆔 Workflow ID: {workflow_id}"
-    ])
-    
-    return "\n".join(summary_parts)
-
-
-# Create the global orchestrator agent instance
-orchestrator_agent = create_orchestrator_agent()
-
-
-class OrchestratorDecisionEngine:
-    """
-    Legacy decision engine - kept for backward compatibility.
-    
-    The new orchestrator uses LLM-based decision making instead
-    of hard-coded heuristics, but this class is preserved for
-    any existing code that might reference it.
-    """
-    
-    @staticmethod
-    def determine_next_agent(state: MetanalysisState) -> str:
+    def decide_next_action(
+        self, 
+        state: MetaAnalysisState
+    ) -> Command[Literal[
+        "researcher", "processor", "retriever", "analyst", 
+        "writer", "reviewer", "editor", "__end__"
+    ]]:
         """
-        Legacy method - now delegates to LLM-based orchestrator.
+        Analisa o estado atual e decide qual agente invocar próximo.
         
         Args:
-            state: Current meta-analysis state
+            state: Estado atual da meta-análise
             
         Returns:
-            Name of the next agent (always "orchestrator" now)
+            Command com próximo agente e atualizações de estado
         """
-        # The new approach always returns "orchestrator" since
-        # the LLM handles tool selection internally
-        return "orchestrator"
+        try:
+            logger.info(f"Orquestrador analisando fase: {state['current_phase']}")
+            
+            # Analisar estado atual
+            phase = state["current_phase"]
+            
+            # Lógica de decisão baseada na fase atual
+            if phase == "pico_definition":
+                return self._handle_pico_definition(state)
+            
+            elif phase == "search":
+                return self._handle_search_phase(state)
+            
+            elif phase == "extraction":
+                return self._handle_extraction_phase(state)
+            
+            elif phase == "vectorization":
+                return self._handle_vectorization_phase(state)
+            
+            elif phase == "analysis":
+                return self._handle_analysis_phase(state)
+            
+            elif phase == "writing":
+                return self._handle_writing_phase(state)
+            
+            elif phase == "review":
+                return self._handle_review_phase(state)
+            
+            elif phase == "editing":
+                return self._handle_editing_phase(state)
+            
+            else:
+                # Fase desconhecida ou concluída
+                return self._handle_completion(state)
+        
+        except Exception as e:
+            logger.error(f"Erro no orquestrador: {e}")
+            return self._handle_error(state, str(e))
     
-    @staticmethod
-    def get_decision_rationale(state: MetanalysisState, next_agent: str) -> str:
+    def _handle_pico_definition(self, state: MetaAnalysisState) -> Command:
+        """Lida com a definição do PICO."""
+        # Se PICO já está definido, prosseguir para busca
+        if state.get("pico") and all(state["pico"].values()):
+            logger.info("PICO já definido, prosseguindo para busca")
+            return Command(
+                goto="researcher",
+                update=update_state_phase(state, "search", "researcher")
+            )
+        
+        # Se não há PICO, analisar solicitação do usuário para extrair PICO
+        user_request = state.get("user_request", "")
+        if not user_request:
+            return Command(
+                goto="__end__",
+                update={
+                    "messages": state["messages"] + [
+                        AIMessage("Erro: Solicitação do usuário não encontrada")
+                    ]
+                }
+            )
+        
+        # Extrair PICO da solicitação
+        pico = self._extract_pico_from_request(user_request)
+        
+        return Command(
+            goto="researcher",
+            update={
+                **update_state_phase(state, "search", "researcher"),
+                "pico": pico,
+                "messages": state["messages"] + [
+                    AIMessage(f"PICO definido: {pico}")
+                ]
+            }
+        )
+    
+    def _handle_search_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de busca de literatura."""
+        # Verificar se já temos URLs candidatas
+        candidate_urls = state.get("candidate_urls", [])
+        
+        if not candidate_urls:
+            # Precisamos buscar literatura
+            logger.info("Iniciando busca de literatura")
+            return Command(
+                goto="researcher",
+                update=add_agent_log(state, self.name, "search_needed")
+            )
+        
+        # Se temos URLs, verificar se precisamos de mais
+        max_papers = Config.MAX_PAPERS_PER_SEARCH
+        if len(candidate_urls) < max_papers:
+            # Buscar mais literatura
+            return Command(
+                goto="researcher", 
+                update=add_agent_log(state, self.name, "search_more_literature")
+            )
+        
+        # Temos URLs suficientes, prosseguir para extração
+        logger.info(f"Encontradas {len(candidate_urls)} URLs, prosseguindo para extração")
+        return Command(
+            goto="processor",
+            update={
+                **update_state_phase(state, "extraction", "processor"),
+                "processing_queue": [url["url"] for url in candidate_urls[:max_papers]]
+            }
+        )
+    
+    def _handle_extraction_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de extração de dados."""
+        processing_queue = state.get("processing_queue", [])
+        processed_articles = state.get("processed_articles", [])
+        
+        if processing_queue:
+            # Ainda há artigos para processar
+            logger.info(f"Processando {len(processing_queue)} artigos restantes")
+            return Command(
+                goto="processor",
+                update=add_agent_log(state, self.name, "continue_processing")
+            )
+        
+        # Verificar se temos dados suficientes
+        if len(processed_articles) < 3:
+            logger.warning("Poucos artigos processados, retornando para busca")
+            return Command(
+                goto="researcher",
+                update={
+                    **update_state_phase(state, "search", "researcher"),
+                    "messages": state["messages"] + [
+                        AIMessage("Poucos artigos encontrados, expandindo busca...")
+                    ]
+                }
+            )
+        
+        # Temos dados suficientes, prosseguir para vetorização
+        logger.info(f"Extração concluída com {len(processed_articles)} artigos")
+        return Command(
+            goto="processor",  # Processor também faz vetorização
+            update=update_state_phase(state, "vectorization", "processor")
+        )
+    
+    def _handle_vectorization_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de vetorização."""
+        vector_store_id = state.get("vector_store_id")
+        chunk_count = state.get("chunk_count", 0)
+        
+        if not vector_store_id or chunk_count == 0:
+            # Vetorização ainda não concluída
+            return Command(
+                goto="processor",
+                update=add_agent_log(state, self.name, "continue_vectorization")
+            )
+        
+        # Vetorização concluída, prosseguir para análise
+        logger.info(f"Vetorização concluída com {chunk_count} chunks")
+        return Command(
+            goto="retriever",
+            update=update_state_phase(state, "analysis", "retriever")
+        )
+    
+    def _handle_analysis_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de análise."""
+        retrieval_results = state.get("retrieval_results", [])
+        statistical_analysis = state.get("statistical_analysis", {})
+        
+        if not retrieval_results:
+            # Precisamos buscar informações relevantes
+            return Command(
+                goto="retriever",
+                update=add_agent_log(state, self.name, "retrieve_information")
+            )
+        
+        if not statistical_analysis:
+            # Precisamos fazer análise estatística
+            return Command(
+                goto="analyst",
+                update=add_agent_log(state, self.name, "perform_analysis")
+            )
+        
+        # Análise concluída, prosseguir para escrita
+        logger.info("Análise concluída, iniciando escrita do relatório")
+        return Command(
+            goto="writer",
+            update=update_state_phase(state, "writing", "writer")
+        )
+    
+    def _handle_writing_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de escrita do relatório."""
+        draft_report = state.get("draft_report")
+        
+        if not draft_report:
+            # Precisamos escrever o relatório
+            return Command(
+                goto="writer",
+                update=add_agent_log(state, self.name, "write_report")
+            )
+        
+        # Relatório escrito, prosseguir para revisão
+        logger.info("Relatório escrito, iniciando revisão")
+        return Command(
+            goto="reviewer",
+            update=update_state_phase(state, "review", "reviewer")
+        )
+    
+    def _handle_review_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de revisão."""
+        review_feedback = state.get("review_feedback", [])
+        
+        if not review_feedback:
+            # Precisamos revisar o relatório
+            return Command(
+                goto="reviewer",
+                update=add_agent_log(state, self.name, "review_report")
+            )
+        
+        # Verificar se há feedback que requer ação
+        needs_revision = any(
+            feedback.get("action") == "revise" 
+            for feedback in review_feedback
+        )
+        
+        if needs_revision:
+            # Retornar para escrita com feedback
+            logger.info("Feedback de revisão requer modificações")
+            return Command(
+                goto="writer",
+                update={
+                    **update_state_phase(state, "writing", "writer"),
+                    "messages": state["messages"] + [
+                        AIMessage("Aplicando feedback da revisão...")
+                    ]
+                }
+            )
+        
+        # Revisão aprovada, prosseguir para edição final
+        logger.info("Revisão aprovada, iniciando edição final")
+        return Command(
+            goto="editor",
+            update=update_state_phase(state, "editing", "editor")
+        )
+    
+    def _handle_editing_phase(self, state: MetaAnalysisState) -> Command:
+        """Lida com a fase de edição final."""
+        final_report = state.get("final_report")
+        
+        if not final_report:
+            # Precisamos fazer edição final
+            return Command(
+                goto="editor",
+                update=add_agent_log(state, self.name, "final_editing")
+            )
+        
+        # Edição concluída, finalizar processo
+        return self._handle_completion(state)
+    
+    def _handle_completion(self, state: MetaAnalysisState) -> Command:
+        """Lida com a conclusão da meta-análise."""
+        logger.info("Meta-análise concluída com sucesso")
+        
+        # Calcular estatísticas finais
+        total_articles = len(state.get("processed_articles", []))
+        total_time = sum(state.get("execution_time", {}).values())
+        
+        completion_message = f"""
+        🎉 META-ANÁLISE CONCLUÍDA COM SUCESSO!
+        
+        📊 Estatísticas:
+        - Artigos processados: {total_articles}
+        - Chunks criados: {state.get('chunk_count', 0)}
+        - Tempo total: {total_time:.2f}s
+        
+        📋 Relatório final disponível em: outputs/meta_analysis_report_{state['meta_analysis_id']}.html
         """
-        Legacy method - provides generic rationale.
+        
+        return Command(
+            goto="__end__",
+            update={
+                **update_state_phase(state, "completed", self.name),
+                "messages": state["messages"] + [AIMessage(completion_message)]
+            }
+        )
+    
+    def _handle_error(self, state: MetaAnalysisState, error_msg: str) -> Command:
+        """Lida com erros no processo."""
+        logger.error(f"Erro no orquestrador: {error_msg}")
+        
+        return Command(
+            goto="__end__",
+            update={
+                "messages": state["messages"] + [
+                    AIMessage(f"Erro na meta-análise: {error_msg}")
+                ],
+                **add_agent_log(state, self.name, "error", {"error": error_msg}, "error")
+            }
+        )
+    
+    def _extract_pico_from_request(self, user_request: str) -> Dict[str, str]:
+        """
+        Extrai estrutura PICO da solicitação do usuário usando LLM.
         
         Args:
-            state: Current state
-            next_agent: Chosen next agent
+            user_request: Solicitação em linguagem natural
             
         Returns:
-            Generic explanation
+            Dicionário com PICO estruturado
         """
-        return "Using LLM-based intelligent decision making"
+        try:
+            prompt = f"""
+            Analise a seguinte solicitação de meta-análise e extraia a estrutura PICO:
+            
+            Solicitação: "{user_request}"
+            
+            Extraia e estruture as seguintes informações:
+            - P (População): Qual grupo de pacientes/participantes?
+            - I (Intervenção): Qual tratamento/intervenção está sendo estudada?
+            - C (Comparação): Qual é o grupo controle ou comparação?
+            - O (Outcome/Desfecho): Qual resultado está sendo medido?
+            
+            Responda em formato JSON:
+            {{
+                "population": "descrição da população",
+                "intervention": "descrição da intervenção",
+                "comparison": "descrição da comparação",
+                "outcome": "descrição do desfecho"
+            }}
+            
+            Se algum elemento não estiver claro, faça uma inferência razoável baseada no contexto médico.
+            """
+            
+            response = self.llm.invoke(prompt)
+            
+            # Tentar parsear JSON
+            import json
+            pico = json.loads(response.content)
+            
+            # Validar que temos todos os campos
+            required_fields = ["population", "intervention", "comparison", "outcome"]
+            for field in required_fields:
+                if field not in pico or not pico[field]:
+                    pico[field] = f"Não especificado em '{user_request}'"
+            
+            logger.info(f"PICO extraído: {pico}")
+            return pico
+            
+        except Exception as e:
+            logger.error(f"Erro ao extrair PICO: {e}")
+            # Retornar PICO padrão baseado na solicitação
+            return {
+                "population": f"Pacientes mencionados em: {user_request[:100]}",
+                "intervention": "Intervenção a ser determinada",
+                "comparison": "Controle a ser determinado",
+                "outcome": "Desfecho a ser determinado"
+            }
+
+
+def orchestrator_node(state: MetaAnalysisState) -> Command:
+    """
+    Nó do orquestrador para uso no LangGraph.
+    
+    Args:
+        state: Estado atual da meta-análise
+        
+    Returns:
+        Command com próxima ação
+    """
+    orchestrator = OrchestratorAgent()
+    return orchestrator.decide_next_action(state)
