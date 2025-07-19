@@ -1,0 +1,45 @@
+# Core LangGraph and LangChain dependencies
+langgraph>=0.2.50
+langchain>=0.3.7
+langchain-core>=0.3.15
+langchain-openai>=0.2.8
+langchain-community>=0.3.5
+
+# Database and persistence
+psycopg2-binary>=2.9.9
+redis>=5.0.8
+pymongo>=4.8.0
+
+# Vector store and embeddings
+faiss-cpu>=1.8.0
+numpy>=1.24.0
+
+# Scientific computing and visualization
+scipy>=1.11.0
+matplotlib>=3.7.0
+plotly>=5.17.0
+pandas>=2.1.0
+seaborn>=0.12.0
+
+# Web scraping and API
+tavily-python>=0.3.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Async and utilities
+aiohttp>=3.9.0
+asyncio-throttle>=1.0.2
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+typing-extensions>=4.8.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.9.0
+flake8>=6.1.0
+mypy>=1.6.0
+
+# Jupyter for development
+jupyter>=1.0.0
+ipykernel>=6.25.0
