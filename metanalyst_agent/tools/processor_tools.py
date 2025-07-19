@@ -519,7 +519,7 @@ def chunk_and_vectorize(
         chunks = text_splitter.split_text(content)
         
         # Generate embeddings for each chunk
-        chunk_embeddings = embeddings.embed_documents(chunks)
+        chunk_embeddings = get_embeddings().embed_documents(chunks)
         
         # Create chunk objects with metadata
         chunk_objects = []
