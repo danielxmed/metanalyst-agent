@@ -1,13 +1,11 @@
 """Handoff tools for agent-to-agent communication and control transfer"""
 
-from typing import Annotated, Dict, Any
-from langchain_core.tools import tool, InjectedToolCallId
+from typing import Annotated, Dict, Any, Optional
+from langchain_core.tools import tool
 from langchain_core.messages import ToolMessage
-from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from langgraph.graph import MessagesState
 
-from ..state.iteration_state import IterationState
+from ..state.meta_analysis_state import MetaAnalysisState
 
 
 def create_handoff_tool(*, agent_name: str, description: str):
@@ -30,9 +28,7 @@ def create_handoff_tool(*, agent_name: str, description: str):
         context: Annotated[str, "Context and information relevant for the next agent"],
         priority: Annotated[str, "Priority level: low, medium, high, urgent"] = "medium",
         expected_outcome: Annotated[str, "What you expect this agent to accomplish"] = "",
-        state: Annotated[IterationState, InjectedState] = None,
-        tool_call_id: Annotated[str, InjectedToolCallId] = None,
-    ) -> Command:
+    ) -> str:
         """
         Transfer control to another agent with comprehensive context
         
@@ -41,70 +37,13 @@ def create_handoff_tool(*, agent_name: str, description: str):
             context: Relevant information for the next agent
             priority: Priority level for the task
             expected_outcome: Expected results from the target agent
-            state: Current system state (injected)
-            tool_call_id: Tool call identifier (injected)
             
         Returns:
-            Command to transfer control to the target agent
+            Confirmation message of the transfer
         """
         
-        # Create tool message confirming the transfer
-        tool_message = ToolMessage(
-            content=f"Transferring control to {agent_name}. Reason: {reason}",
-            tool_call_id=tool_call_id,
-            name=tool_name
-        )
-        
-        # Create context message for the receiving agent
-        context_message = {
-            "role": "system", 
-            "content": f"""
-HANDOFF RECEIVED FROM: {state.get('current_agent', 'unknown')}
-
-TRANSFER REASON: {reason}
-
-CONTEXT: {context}
-
-PRIORITY: {priority}
-
-EXPECTED OUTCOME: {expected_outcome}
-
-CURRENT PHASE: {state.get('current_phase', 'unknown')}
-
-PROGRESS SUMMARY:
-- Total articles processed: {state.get('total_articles_processed', 0)}
-- Current quality score: {state.get('quality_scores', {}).get('overall', 0)}
-- Iterations completed: {state.get('global_iterations', 0)}
-
-Please proceed with your specialized tasks based on this context.
-""".strip()
-        }
-        
-        # Update state with handoff information
-        update_dict = {
-            "messages": [tool_message, context_message],
-            "current_agent": agent_name,
-            "last_handoff": {
-                "from_agent": state.get('current_agent', 'unknown'),
-                "to_agent": agent_name,
-                "reason": reason,
-                "context": context,
-                "priority": priority,
-                "timestamp": "2024-01-01T00:00:00Z"  # Would use datetime.now() in real implementation
-            }
-        }
-        
-        # Track agent iterations
-        if "agent_iterations" in state:
-            agent_iterations = state["agent_iterations"].copy()
-            agent_iterations[agent_name] = agent_iterations.get(agent_name, 0) + 1
-            update_dict["agent_iterations"] = agent_iterations
-        
-        return Command(
-            goto=agent_name,
-            update=update_dict,
-            graph=Command.PARENT  # Navigate to parent graph
-        )
+        # Return a simple string that will be used by the orchestrator to route
+        return f"transfer_to_{agent_name}|{reason}|{context}|{priority}|{expected_outcome}"
     
     return handoff_tool
 
@@ -179,9 +118,7 @@ def request_supervisor_intervention(
     issue_description: Annotated[str, "Description of the issue requiring supervisor attention"],
     severity: Annotated[str, "Severity level: low, medium, high, critical"] = "medium",
     suggested_action: Annotated[str, "Suggested action to resolve the issue"] = "",
-    state: Annotated[IterationState, InjectedState] = None,
-    tool_call_id: Annotated[str, InjectedToolCallId] = None,
-) -> Command:
+) -> str:
     """
     Request intervention from the supervisor agent for issues that require oversight
     
@@ -189,56 +126,12 @@ def request_supervisor_intervention(
         issue_description: What problem needs supervisor attention
         severity: How critical the issue is
         suggested_action: Recommended course of action
-        state: Current system state (injected)
-        tool_call_id: Tool call identifier (injected)
         
     Returns:
-        Command to transfer control to supervisor
+        Confirmation message of the intervention request
     """
     
-    tool_message = ToolMessage(
-        content=f"Requesting supervisor intervention: {issue_description}",
-        tool_call_id=tool_call_id,
-        name="request_supervisor_intervention"
-    )
-    
-    intervention_message = {
-        "role": "system",
-        "content": f"""
-SUPERVISOR INTERVENTION REQUESTED
-
-REQUESTING AGENT: {state.get('current_agent', 'unknown')}
-SEVERITY: {severity}
-
-ISSUE: {issue_description}
-
-SUGGESTED ACTION: {suggested_action}
-
-CURRENT STATE:
-- Phase: {state.get('current_phase', 'unknown')}
-- Global iterations: {state.get('global_iterations', 0)}
-- Quality satisfied: {state.get('quality_satisfied', False)}
-- Force stop flag: {state.get('force_stop', False)}
-
-Please assess the situation and determine the appropriate course of action.
-""".strip()
-    }
-    
-    return Command(
-        goto="supervisor",
-        update={
-            "messages": [tool_message, intervention_message],
-            "intervention_requested": True,
-            "intervention_details": {
-                "requesting_agent": state.get('current_agent', 'unknown'),
-                "issue": issue_description,
-                "severity": severity,
-                "suggested_action": suggested_action,
-                "timestamp": "2024-01-01T00:00:00Z"
-            }
-        },
-        graph=Command.PARENT
-    )
+    return f"supervisor_intervention|{issue_description}|{severity}|{suggested_action}"
 
 
 @tool 
@@ -246,9 +139,7 @@ def signal_completion(
     completion_reason: Annotated[str, "Reason why the task is considered complete"],
     quality_assessment: Annotated[str, "Assessment of the quality of completed work"],
     final_outputs: Annotated[str, "Description of final outputs produced"] = "",
-    state: Annotated[IterationState, InjectedState] = None,
-    tool_call_id: Annotated[str, InjectedToolCallId] = None,
-) -> Command:
+) -> str:
     """
     Signal that the current agent's work is complete and ready for next phase
     
@@ -256,78 +147,28 @@ def signal_completion(
         completion_reason: Why the work is considered complete
         quality_assessment: Assessment of work quality
         final_outputs: What was produced
-        state: Current system state (injected)
-        tool_call_id: Tool call identifier (injected)
         
     Returns:
-        Command to return to supervisor for next phase decision
+        Confirmation message of completion
     """
     
-    tool_message = ToolMessage(
-        content=f"Work completed: {completion_reason}",
-        tool_call_id=tool_call_id,
-        name="signal_completion"
-    )
-    
-    completion_message = {
-        "role": "system",
-        "content": f"""
-WORK COMPLETION SIGNAL
-
-COMPLETING AGENT: {state.get('current_agent', 'unknown')}
-
-COMPLETION REASON: {completion_reason}
-
-QUALITY ASSESSMENT: {quality_assessment}
-
-OUTPUTS PRODUCED: {final_outputs}
-
-The agent has finished its current tasks and is ready for the next phase of the meta-analysis.
-""".strip()
-    }
-    
-    return Command(
-        goto="supervisor",
-        update={
-            "messages": [tool_message, completion_message],
-            "work_completed": True,
-            "completion_details": {
-                "completing_agent": state.get('current_agent', 'unknown'),
-                "reason": completion_reason,
-                "quality": quality_assessment,
-                "outputs": final_outputs,
-                "timestamp": "2024-01-01T00:00:00Z"
-            }
-        },
-        graph=Command.PARENT
-    )
+    return f"work_completed|{completion_reason}|{quality_assessment}|{final_outputs}"
 
 
 @tool
 def request_quality_check(
     work_description: Annotated[str, "Description of work that needs quality checking"],
     quality_concerns: Annotated[str, "Specific quality concerns or areas to focus on"] = "",
-    state: Annotated[IterationState, InjectedState] = None,
-    tool_call_id: Annotated[str, InjectedToolCallId] = None,
-) -> Command:
+) -> str:
     """
     Request quality check from the reviewer agent
     
     Args:
         work_description: What work needs to be reviewed
         quality_concerns: Specific areas of concern
-        state: Current system state (injected)
-        tool_call_id: Tool call identifier (injected)
         
     Returns:
-        Command to transfer to reviewer agent
+        Confirmation message of quality check request
     """
     
-    return transfer_to_reviewer(
-        reason=f"Quality check requested for: {work_description}",
-        context=f"Quality concerns: {quality_concerns}" if quality_concerns else "General quality review requested",
-        priority="high",
-        expected_outcome="Quality assessment and improvement recommendations",
-        state=state,
-        tool_call_id=tool_call_id
-    )
+    return f"quality_check_requested|{work_description}|{quality_concerns}"

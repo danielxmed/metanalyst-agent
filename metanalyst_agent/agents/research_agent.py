@@ -7,17 +7,17 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from ..config.settings import settings
+from .base_agent import create_agent_with_state_context
 from ..tools.research_tools import (
-    search_scientific_literature,
-    generate_search_queries_with_llm,
+    search_literature,
+    generate_search_queries,
     assess_article_relevance,
-    filter_articles_by_relevance,
 )
 from ..tools.handoff_tools import (
     transfer_to_processor,
     transfer_to_analyst,
-    transfer_to_orchestrator,
-    emergency_stop,
+    request_supervisor_intervention,
+    signal_completion,
 )
 
 
@@ -41,15 +41,14 @@ def create_research_agent():
     
     # Research agent tools
     research_tools = [
-        search_scientific_literature,
-        generate_search_queries_with_llm,
+        search_literature,
+        generate_search_queries,
         assess_article_relevance,
-        filter_articles_by_relevance,
         # Handoff tools
         transfer_to_processor,
         transfer_to_analyst,
-        transfer_to_orchestrator,
-        emergency_stop,
+        request_supervisor_intervention,
+        signal_completion,
     ]
     
     # System prompt for research agent
@@ -99,19 +98,23 @@ def create_research_agent():
     - Document any challenges or limitations encountered
     
     TOOLS USAGE:
-    - Use generate_search_queries_with_llm to create optimized queries
-    - Use search_scientific_literature for actual searching
+    - Use generate_search_queries with the PICO framework provided in your context to create optimized queries
+    - Extract PICO data from the current state context and pass it to generate_search_queries
+    - Use search_literature for actual searching with the generated queries
     - Use assess_article_relevance for individual article evaluation
-    - Use filter_articles_by_relevance for batch processing
+    
+    IMPORTANT: When calling generate_search_queries, you MUST provide the PICO framework from your context.
+    The PICO will be provided in the system context - extract it and pass it to the tool.
     
     Remember: You are autonomous and make your own decisions about search strategy and when to transfer control.
     """
     
-    # Create the research agent
-    research_agent = create_react_agent(
-        model=llm,
+    # Create the research agent with state context
+    research_agent = create_agent_with_state_context(
+        name="researcher",
+        system_prompt=system_prompt,
         tools=research_tools,
-        state_modifier=system_prompt,
+        model=llm
     )
     
     return research_agent

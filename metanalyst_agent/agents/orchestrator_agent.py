@@ -12,11 +12,19 @@ from langgraph.prebuilt import create_react_agent
 from ..config.settings import settings
 from ..state.meta_analysis_state import MetaAnalysisState
 from ..state.iteration_state import update_agent_performance
+from .base_agent import create_agent_with_state_context, format_agent_response
 from ..tools.handoff_tools import (
     create_handoff_tool,
     request_supervisor_intervention,
     signal_completion,
     request_quality_check,
+    transfer_to_researcher,
+    transfer_to_processor,
+    transfer_to_retriever,
+    transfer_to_analyst,
+    transfer_to_writer,
+    transfer_to_reviewer,
+    transfer_to_editor,
 )
 
 
@@ -43,8 +51,9 @@ def create_orchestrator_agent():
         transfer_to_writer,
         transfer_to_reviewer,
         transfer_to_editor,
-        emergency_stop,
-        request_human_intervention,
+        request_supervisor_intervention,
+        signal_completion,
+        request_quality_check,
     ]
     
     # System prompt for the orchestrator
@@ -98,11 +107,12 @@ def create_orchestrator_agent():
     IMPORTANT: You coordinate but don't execute. Always delegate to specialized agents using transfer tools.
     """
     
-    # Create the orchestrator agent
-    orchestrator = create_react_agent(
-        model=llm,
+    # Create the orchestrator agent with state context
+    orchestrator = create_agent_with_state_context(
+        name="orchestrator",
+        system_prompt=system_prompt,
         tools=orchestrator_tools,
-        state_modifier=system_prompt,
+        model=llm
     )
     
     return orchestrator

@@ -1,0 +1,6 @@
+# Core requirements for CLI
+click>=8.0.0
+rich>=13.0.0
+
+# Base requirements (inherit from main requirements.txt)
+-r requirements.txt

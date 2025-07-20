@@ -7,6 +7,10 @@ from typing import Optional, Dict, Any, List
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -66,6 +70,16 @@ class Settings(BaseSettings):
     # Development Configuration
     debug: bool = Field(False, env="DEBUG")
     development_mode: bool = Field(False, env="DEVELOPMENT_MODE")
+    
+    @property
+    def logs_dir(self) -> Path:
+        """Get logs directory from log_file path"""
+        return self.log_file.parent
+    
+    @property
+    def data_dir(self) -> Path:
+        """Get data directory"""
+        return Path("./data")
     
     class Config:
         env_file = ".env"
