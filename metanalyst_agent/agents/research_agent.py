@@ -8,17 +8,11 @@ from langgraph.prebuilt import create_react_agent
 
 from ..config.settings import settings
 from ..tools.research_tools import (
-    search_scientific_literature,
-    generate_search_queries_with_llm,
+    search_literature,
+    generate_search_queries,
     assess_article_relevance,
-    filter_articles_by_relevance,
 )
-from ..tools.handoff_tools import (
-    transfer_to_processor,
-    transfer_to_analyst,
-    transfer_to_orchestrator,
-    emergency_stop,
-)
+from ..tools.handoff_tools import create_handoff_tool
 
 
 def create_research_agent():
@@ -39,17 +33,31 @@ def create_research_agent():
     # Initialize LLM
     llm = ChatOpenAI(**settings.get_openai_config())
     
+    # Create handoff tools
+    transfer_to_processor = create_handoff_tool(
+        agent_name="processor",
+        description="Transfer control to processor agent for data extraction and quality assessment"
+    )
+    
+    transfer_to_analyst = create_handoff_tool(
+        agent_name="analyst", 
+        description="Transfer control to analyst agent for statistical analysis"
+    )
+    
+    transfer_to_orchestrator = create_handoff_tool(
+        agent_name="orchestrator",
+        description="Transfer control back to orchestrator for coordination"
+    )
+    
     # Research agent tools
     research_tools = [
-        search_scientific_literature,
-        generate_search_queries_with_llm,
+        search_literature,
+        generate_search_queries,
         assess_article_relevance,
-        filter_articles_by_relevance,
         # Handoff tools
         transfer_to_processor,
         transfer_to_analyst,
         transfer_to_orchestrator,
-        emergency_stop,
     ]
     
     # System prompt for research agent
@@ -111,7 +119,7 @@ def create_research_agent():
     research_agent = create_react_agent(
         model=llm,
         tools=research_tools,
-        state_modifier=system_prompt,
+        prompt=system_prompt,
     )
     
     return research_agent

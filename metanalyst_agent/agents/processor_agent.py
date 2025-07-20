@@ -128,7 +128,7 @@ def create_processor_agent():
     processor_agent = create_react_agent(
         model=llm,
         tools=processor_tools,
-        state_modifier=system_prompt,
+        prompt=system_prompt,
     )
     
     return processor_agent
