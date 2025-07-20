@@ -34,9 +34,8 @@ def create_analyst_agent(settings: Dict[str, Any]) -> Any:
     
     # Initialize LLM with settings
     llm = ChatOpenAI(
-        model=settings.get("openai_model", "gpt-4o"),
+        model=settings.get("openai_model", "o3-mini"),
         api_key=settings.get("openai_api_key"),
-        temperature=0.1
     )
     
     # Define analyst tools

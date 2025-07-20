@@ -374,7 +374,7 @@ def extract_statistical_data(
         Dictionary with extracted statistical data and study characteristics
     """
     try:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        llm = ChatOpenAI(model="o3-mini")
         
         # Truncate content if too long (keep first 8000 chars for context)
         if len(content) > 8000:
@@ -516,7 +516,7 @@ def generate_vancouver_citation(article_data: Dict[str, Any]) -> str:
         Vancouver formatted citation string
     """
     try:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        llm = ChatOpenAI(model="o3-mini")
         
         prompt = f"""
         Generate a Vancouver style citation for this article.
@@ -661,7 +661,7 @@ def chunk_and_vectorize(
 
 
 @tool  
-def extract_with_fallback(url: str, max_retries: int = 2) -> Dict[str, Any]:
+def extract_article_content(url: str, max_retries: int = 2) -> Dict[str, Any]:
     """
     Fallback extraction method when Tavily fails.
     Uses simple web scraping as backup.
@@ -810,7 +810,7 @@ def process_article_pipeline(
         # If Tavily extraction fails, try fallback method
         if not extraction_result.get("success"):
             logger.warning(f"Tavily extraction failed for {url}, trying fallback method")
-            extraction_result = extract_with_fallback.invoke({"url": url})
+            extraction_result = extract_article_content.invoke({"url": url})
             
             if not extraction_result.get("success"):
                 logger.error(f"Both Tavily and fallback extraction failed for {url}")

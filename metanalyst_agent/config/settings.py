@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     
     # API Configuration
     openai_api_key: str = Field("", env="OPENAI_API_KEY", description="OpenAI API key - required for operation")
-    openai_model: str = Field("gpt-4o", env="OPENAI_MODEL")
+    openai_model: str = Field("o3", env="OPENAI_MODEL")
     openai_embedding_model: str = Field("text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     tavily_api_key: str = Field("", env="TAVILY_API_KEY", description="Tavily API key - required for operation")
     
@@ -123,7 +123,6 @@ class Settings(BaseSettings):
         return {
             "api_key": self.openai_api_key,
             "model": self.openai_model,
-            "temperature": 0.1
         }
         
     def get_embedding_config(self) -> Dict[str, Any]:

@@ -148,9 +148,7 @@ def create_orchestrator_agent():
         name="orchestrator",
         system_prompt=system_prompt,
         tools=orchestrator_tools,
-        prompt=system_prompt,
         model=llm
-
     )
     
     return orchestrator

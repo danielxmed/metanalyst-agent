@@ -52,7 +52,7 @@ class DatabaseManager:
         return self._store
     
     @contextmanager
-    def get_connection(self):
+    def get_db_connection(self):
         """Get a direct PostgreSQL connection for application queries."""
         conn = None
         try:
@@ -74,7 +74,7 @@ class DatabaseManager:
     @contextmanager
     def get_cursor(self):
         """Get a cursor with automatic connection management."""
-        with self.get_connection() as conn:
+        with self.get_db_connection() as conn:
             cursor = conn.cursor()
             try:
                 yield cursor, conn
@@ -97,7 +97,7 @@ class DatabaseManager:
     
     def execute_script(self, script: str) -> None:
         """Execute a SQL script (multiple statements)."""
-        with self.get_connection() as conn:
+        with self.get_db_connection() as conn:
             cursor = conn.cursor()
             try:
                 cursor.execute(script)
@@ -239,7 +239,7 @@ class AsyncDatabaseManager:
             raise
     
     @asynccontextmanager
-    async def get_connection(self):
+    async def get_db_connection(self):
         """Get async database connection."""
         if not self._pool:
             await self.initialize_pool()
@@ -249,12 +249,12 @@ class AsyncDatabaseManager:
     
     async def execute_query(self, query: str, *args) -> list:
         """Execute async query."""
-        async with self.get_connection() as conn:
+        async with self.get_db_connection() as conn:
             return await conn.fetch(query, *args)
     
     async def execute_command(self, command: str, *args) -> str:
         """Execute async command."""
-        async with self.get_connection() as conn:
+        async with self.get_db_connection() as conn:
             return await conn.execute(command, *args)
     
     async def close(self):

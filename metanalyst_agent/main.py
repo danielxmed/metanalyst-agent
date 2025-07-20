@@ -55,20 +55,17 @@ class MetanalystAgent:
         
         # Initialize storage components
         self.use_persistent_storage = use_persistent_storage
-        self._postgres_checkpointer_cm = None
-        self._postgres_store_cm = None
+        self._postgres_checkpointer = None
+        self._postgres_store = None
+        
+        # For now, always use in-memory storage to avoid async initialization issues
+        # PostgreSQL storage will be initialized on-demand when needed
+        self.checkpointer = MemorySaver()
+        self.store = InMemoryStore()
         
         if use_persistent_storage:
-            # Store the context managers for proper cleanup
-            self._postgres_checkpointer_cm = PostgresSaver.from_conn_string(self.database_url)
-            self._postgres_store_cm = PostgresStore.from_conn_string(self.database_url)
-            
-            # Enter the context managers
-            self.checkpointer = self._postgres_checkpointer_cm.__enter__()
-            self.store = self._postgres_store_cm.__enter__()
-        else:
-            self.checkpointer = MemorySaver()
-            self.store = InMemoryStore()
+            logger.warning("PostgreSQL storage requested but using in-memory for stability. "
+                         "PostgreSQL will be available in future versions.")
         
         # Initialize agents (lazy loading)
         self._orchestrator_agent = None
@@ -756,22 +753,33 @@ class MetanalystAgent:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
-        # Cleanup PostgreSQL context managers if needed
-        if self.use_persistent_storage:
-            try:
-                if self._postgres_store_cm:
-                    self._postgres_store_cm.__exit__(exc_type, exc_val, exc_tb)
-                if self._postgres_checkpointer_cm:
-                    self._postgres_checkpointer_cm.__exit__(exc_type, exc_val, exc_tb)
-            except Exception as e:
-                print(f"Warning: Error closing PostgreSQL connections: {e}")
-        
-        # For other storage types
-        else:
+        # Cleanup storage connections
+        try:
             if hasattr(self.checkpointer, 'close'):
                 self.checkpointer.close()
+        except Exception as e:
+            logger.warning(f"Error closing checkpointer: {e}")
+        
+        try:
             if hasattr(self.store, 'close'):
                 self.store.close()
+        except Exception as e:
+            logger.warning(f"Error closing store: {e}")
+        
+        # Cleanup PostgreSQL resources if they exist
+        if self._postgres_checkpointer:
+            try:
+                if hasattr(self._postgres_checkpointer, 'close'):
+                    self._postgres_checkpointer.close()
+            except Exception as e:
+                logger.warning(f"Error closing PostgreSQL checkpointer: {e}")
+        
+        if self._postgres_store:
+            try:
+                if hasattr(self._postgres_store, 'close'):
+                    self._postgres_store.close()
+            except Exception as e:
+                logger.warning(f"Error closing PostgreSQL store: {e}")
 
 
 # Convenience function for quick meta-analyses

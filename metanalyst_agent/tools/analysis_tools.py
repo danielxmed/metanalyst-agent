@@ -44,7 +44,7 @@ def calculate_meta_analysis(
             }
         
         # Use LLM to guide the meta-analysis approach
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        llm = ChatOpenAI(model="o3")
         
         prompt = f"""
         You are an expert biostatistician performing a meta-analysis.
@@ -336,7 +336,7 @@ def assess_heterogeneity(
             }
         
         # Use LLM to provide comprehensive interpretation
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        llm = ChatOpenAI(model="o3")
         
         prompt = f"""
         You are a biostatistician interpreting heterogeneity in a meta-analysis.
@@ -442,7 +442,7 @@ def perform_sensitivity_analysis(
             }
         
         # Use LLM to guide sensitivity analysis
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        llm = ChatOpenAI(model="o3")
         
         prompt = f"""
         You are conducting a sensitivity analysis for a meta-analysis.

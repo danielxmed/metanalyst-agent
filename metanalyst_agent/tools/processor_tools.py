@@ -24,7 +24,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # PostgreSQL connection for optimized storage
-from ..database.connection import get_db_connection
+from ..database.connection import get_database_manager
 
 # Circuit breaker state for tracking URL failures
 _url_failure_counts = {}
@@ -37,7 +37,7 @@ _processed_urls_cache = set()
 def _is_url_already_processed(url: str, meta_analysis_id: str) -> bool:
     """Check if URL is already processed using PostgreSQL"""
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT COUNT(*) FROM articles 
@@ -52,7 +52,7 @@ def _is_url_already_processed(url: str, meta_analysis_id: str) -> bool:
 def _mark_url_as_processed(url: str, meta_analysis_id: str, article_id: str):
     """Mark URL as processed in PostgreSQL"""
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO articles (id, meta_analysis_id, url, processing_status, created_at)
@@ -68,7 +68,7 @@ def _mark_url_as_processed(url: str, meta_analysis_id: str, article_id: str):
 def _store_article_chunks_in_db(article_id: str, chunks_data: Dict[str, Any]):
     """Store article chunks in PostgreSQL for optimized retrieval"""
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 for chunk in chunks_data.get("chunks", []):
                     cursor.execute("""
@@ -102,9 +102,8 @@ def get_llm():
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is required")
     return ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+        model=os.getenv("OPENAI_MODEL", "o3-mini"),
         api_key=api_key,
-        temperature=0.1
     )
 
 def get_embeddings():
@@ -848,7 +847,7 @@ def get_processed_urls_for_analysis(meta_analysis_id: str) -> Dict[str, Any]:
         List of processed articles metadata
     """
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT id, url, title, authors, journal, publication_year, 
@@ -897,7 +896,7 @@ def get_article_chunks_for_retrieval(article_ids: List[str], query: str = None) 
         Article chunks for retrieval
     """
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 placeholders = ','.join(['%s'] * len(article_ids))
                 cursor.execute(f"""

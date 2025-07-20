@@ -15,11 +15,11 @@ from ..tools.research_tools import (
 
 )
 from ..tools.handoff_tools import (
+    create_handoff_tool,
     transfer_to_processor,
     transfer_to_analyst,
     request_supervisor_intervention,
     signal_completion,
-
 )
 
 
@@ -134,9 +134,7 @@ def create_research_agent():
         name="researcher",
         system_prompt=system_prompt,
         tools=research_tools,
-        prompt=system_prompt,
         model=llm
-
     )
     
     return research_agent

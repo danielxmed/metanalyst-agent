@@ -16,7 +16,7 @@ from ..tools.processor_tools import (
     extract_statistical_data,
     generate_vancouver_citation,
     chunk_and_vectorize,
-    extract_with_fallback,
+    extract_article_content,
 )
 from ..tools.handoff_tools import (
     create_handoff_tool,
@@ -54,7 +54,7 @@ def create_processor_agent():
         get_article_chunks_for_retrieval,  # NEW: Get chunks from DB
         # Individual processing tools
         extract_article_content,
-        extract_with_fallback,
+        extract_article_content,
         extract_statistical_data,
         generate_vancouver_citation,
         chunk_and_vectorize,
@@ -127,9 +127,7 @@ def create_processor_agent():
         name="processor",
         system_prompt=system_prompt,
         tools=processor_tools,
-        prompt=system_prompt,
         model=llm
-
     )
     
     return processor_agent

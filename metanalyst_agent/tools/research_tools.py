@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # PostgreSQL connection for URL deduplication
-from ..database.connection import get_db_connection
+from ..database.connection import get_database_manager
 
 # Cache for candidate URLs to avoid duplicates within session
 _candidate_urls_cache = set()
@@ -27,7 +27,7 @@ def _is_url_already_candidate(url: str, meta_analysis_id: str) -> bool:
     
     # Check database
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT COUNT(*) FROM articles 
@@ -45,7 +45,7 @@ def _is_url_already_candidate(url: str, meta_analysis_id: str) -> bool:
 def _add_url_to_candidates(url: str, meta_analysis_id: str, metadata: Dict[str, Any]):
     """Add URL to candidates in PostgreSQL"""
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 article_id = str(uuid.uuid4())
                 cursor.execute("""
@@ -200,7 +200,7 @@ def get_candidate_urls_summary(meta_analysis_id: str) -> Dict[str, Any]:
         Summary of candidate URLs
     """
     try:
-        with get_db_connection() as conn:
+        with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT url, title, processing_status, created_at
@@ -251,29 +251,30 @@ def generate_search_queries(pico: Dict[str, str]) -> List[str]:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1, api_key=api_key)
+        llm = ChatOpenAI(model="o3-mini", api_key=api_key)
         
         prompt = f"""
-        You are an expert medical librarian specializing in systematic reviews and meta-analyses.
-        
-        Generate 5-7 optimized search queries for medical literature databases based on this PICO framework:
-        
+        You are an expert in constructing search queries for semantic search engines in the medical field. We are using Tavily, a semantic search tool, to find relevant scientific literature. The search must be restricted to trustworthy medical domains (such as .gov, .edu, .org, or well-known medical publishers).
+
+        Generate 5-7 optimized search queries in natural language, based on the following PICO framework:
+
         Population (P): {pico.get('P', 'Not specified')}
         Intervention (I): {pico.get('I', 'Not specified')}
         Comparison (C): {pico.get('C', 'Not specified')}
         Outcome (O): {pico.get('O', 'Not specified')}
-        
+
         Requirements:
-        1. Use medical terminology and MeSH terms when appropriate
-        2. Include both broad and specific queries
-        3. Consider synonyms and alternative terms
-        4. Focus on randomized controlled trials, systematic reviews, and meta-analyses
-        5. Each query should be 10-20 words maximum
-        6. Include at least one query combining all PICO elements
-        7. Include queries focusing on specific aspects (intervention effectiveness, comparison studies)
-        
-        Return only a JSON list of query strings, no other text.
-        
+        1. Write queries in natural language, as if you were asking a question or describing the information you want to find. Do NOT use MeSH terms or database-specific syntax.
+        2. Restrict the queries to trustworthy medical sources (e.g., add "site:gov", "site:edu", "site:nih.gov", "site:who.int", or similar, when appropriate).
+        3. Include both broad and specific queries.
+        4. Consider synonyms and alternative terms in natural language.
+        5. Focus on finding randomized controlled trials, systematic reviews, and meta-analyses.
+        6. Each query should be concise (10-20 words maximum).
+        7. Include at least one query that combines all PICO elements.
+        8. Include queries focusing on specific aspects (such as intervention effectiveness or comparison studies).
+
+        Return ONLY a JSON list of query strings, and nothing else. Do not include any explanation, markdown, or extra text.
+
         Example format: ["query 1", "query 2", "query 3"]
         """
         
@@ -357,7 +358,7 @@ def assess_article_relevance(
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.1, api_key=api_key)
+        llm = ChatOpenAI(model="o3", api_key=api_key)
         
         prompt = f"""
         You are an expert systematic reviewer assessing article relevance for a meta-analysis.
