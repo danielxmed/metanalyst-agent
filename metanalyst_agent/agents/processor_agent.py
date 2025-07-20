@@ -7,12 +7,14 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from ..config.settings import settings
+from .base_agent import create_agent_with_state_context
 from ..tools.processing_tools import (
     extract_article_content,
     extract_statistical_data,
     generate_vancouver_citation,
     chunk_and_vectorize,
     process_article_pipeline,
+    extract_with_fallback,
 )
 from ..tools.handoff_tools import (
     create_handoff_tool,
@@ -44,6 +46,7 @@ def create_processor_agent():
     # Processor agent tools
     processor_tools = [
         extract_article_content,
+        extract_with_fallback,
         extract_statistical_data,
         generate_vancouver_citation,
         chunk_and_vectorize,
@@ -108,11 +111,12 @@ def create_processor_agent():
     - Request orchestrator help for complex processing issues
     
     TOOLS USAGE:
-            - Use extract_article_content for content extraction
+        - Use extract_article_content for primary content extraction via Tavily
+        - Use extract_with_fallback when Tavily extraction fails
         - Use extract_statistical_data for data extraction
         - Use generate_vancouver_citation for citations
         - Use chunk_and_vectorize for text processing
-        - Use process_article_pipeline for end-to-end processing
+        - Use process_article_pipeline for end-to-end processing (includes automatic fallback)
     
     COMMUNICATION:
     - Report processing progress and success rates
@@ -124,11 +128,14 @@ def create_processor_agent():
     Focus on quality extraction and maintaining high success rates.
     """
     
-    # Create the processor agent
-    processor_agent = create_react_agent(
-        model=llm,
+    # Create the processor agent with state context
+    processor_agent = create_agent_with_state_context(
+        name="processor",
+        system_prompt=system_prompt,
         tools=processor_tools,
         prompt=system_prompt,
+        model=llm
+
     )
     
     return processor_agent

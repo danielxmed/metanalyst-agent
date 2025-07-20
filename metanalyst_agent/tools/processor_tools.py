@@ -67,25 +67,31 @@ def extract_article_content(url: str) -> Dict[str, Any]:
     """
     
     try:
-        # Use Tavily Extract for comprehensive content extraction
-        extract_result = get_tavily_client().extract(url)
+        # Use Tavily Extract for comprehensive content extraction (requires list of URLs)
+        extract_result = get_tavily_client().extract(urls=[url])
+        
+        if not extract_result or len(extract_result) == 0:
+            raise Exception("No content extracted from Tavily")
+        
+        # Get first result since we only passed one URL
+        result_data = extract_result[0]
         
         # Clean and structure the extracted content
         content = {
             "url": url,
-            "raw_content": extract_result.get("raw_content", ""),
-            "title": extract_result.get("title", ""),
-            "author": extract_result.get("author", ""),
-            "published_date": extract_result.get("published_date", ""),
-            "content": extract_result.get("content", ""),
+            "raw_content": result_data.get("raw_content", ""),
+            "title": result_data.get("title", ""),
+            "author": result_data.get("author", ""),
+            "published_date": result_data.get("published_date", ""),
+            "content": result_data.get("content", ""),
             "extracted_at": datetime.now().isoformat(),
             "extraction_method": "tavily_extract",
             "success": True
         }
         
         # Additional metadata extraction if available
-        if "metadata" in extract_result:
-            content["metadata"] = extract_result["metadata"]
+        if "metadata" in result_data:
+            content["metadata"] = result_data["metadata"]
         
         return content
     

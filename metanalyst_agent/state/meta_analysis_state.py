@@ -9,7 +9,6 @@ from typing import TypedDict, List, Dict, Any, Optional, Literal, Annotated
 from datetime import datetime
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from langgraph.managed.is_last_step import RemainingSteps
 from pydantic import BaseModel
 
 
@@ -88,7 +87,6 @@ class MetaAnalysisState(TypedDict):
     agent_limits: Dict[str, int]
     global_iterations: int
     max_global_iterations: int
-    remaining_steps: RemainingSteps
     
     # Circuit breaker and retry
     circuit_status: Dict[str, Literal["closed", "open", "half_open"]]

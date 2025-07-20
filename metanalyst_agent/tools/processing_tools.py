@@ -3,6 +3,7 @@
 import json
 import uuid
 import hashlib
+import time
 from typing import List, Dict, Any, Optional
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -13,61 +14,346 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Circuit breaker state for tracking URL failures
+_url_failure_counts = {}
+_url_circuit_breaker = {}  # 'open', 'closed', 'half_open'
+_url_last_attempt = {}
+
+def _should_skip_url(url: str, failure_threshold: int = 3) -> bool:
+    """Check if URL should be skipped due to circuit breaker pattern"""
+    import time
+    
+    current_time = time.time()
+    failure_count = _url_failure_counts.get(url, 0)
+    circuit_state = _url_circuit_breaker.get(url, 'closed')
+    last_attempt = _url_last_attempt.get(url, 0)
+    
+    # If circuit is open, check if we should try half-open
+    if circuit_state == 'open':
+        # Try half-open after 300 seconds (5 minutes)
+        if current_time - last_attempt > 300:
+            _url_circuit_breaker[url] = 'half_open'
+            logger.info(f"Circuit breaker for {url} switching to half-open")
+            return False
+        else:
+            logger.info(f"Circuit breaker for {url} is open, skipping")
+            return True
+    
+    # If too many failures, open the circuit
+    if failure_count >= failure_threshold:
+        _url_circuit_breaker[url] = 'open'
+        _url_last_attempt[url] = current_time
+        logger.warning(f"Circuit breaker for {url} opened after {failure_count} failures")
+        return True
+    
+    return False
+
+def _record_url_failure(url: str):
+    """Record a failure for URL circuit breaker"""
+    _url_failure_counts[url] = _url_failure_counts.get(url, 0) + 1
+    _url_last_attempt[url] = time.time()
+
+def _record_url_success(url: str):
+    """Record a success for URL circuit breaker"""
+    _url_failure_counts[url] = 0
+    _url_circuit_breaker[url] = 'closed'
+
 
 @tool
-def extract_article_content(url: str) -> Dict[str, Any]:
+def extract_article_content(url: str, max_retries: int = 3, retry_delay: float = 1.0) -> Dict[str, Any]:
     """
-    Extract full article content from URL using Tavily Extract API
+    Extract full article content from URL using Tavily Extract API with retry logic and circuit breaker
     
     Args:
         url: URL of the article to extract
+        max_retries: Maximum number of retry attempts
+        retry_delay: Base delay between retries (exponential backoff)
         
     Returns:
         Dictionary with extracted content, metadata, and processing status
     """
-    try:
-        # Initialize Tavily client
-        client = TavilyClient()
-        
-        # Use Tavily Extract to get full content
-        extract_result = client.extract(url=url)
-        
-        if not extract_result:
-            return {
-                "success": False,
-                "error": "No content extracted",
-                "url": url
-            }
-        
-        # Extract and clean content
-        raw_content = extract_result.get("raw_content", "")
-        title = extract_result.get("title", "")
-        
-        # Generate content hash for deduplication
-        content_hash = hashlib.md5(raw_content.encode()).hexdigest()
-        
-        result = {
-            "success": True,
-            "url": url,
-            "title": title,
-            "raw_content": raw_content,
-            "content_length": len(raw_content),
-            "content_hash": content_hash,
-            "extracted_at": "2024-01-01T00:00:00Z",  # Would use datetime.now() in real implementation
-            "extraction_method": "tavily_extract"
-        }
-        
-        logger.info(f"Successfully extracted {len(raw_content)} characters from {url}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error extracting content from {url}: {str(e)}")
+    import time
+    import random
+    from datetime import datetime
+    import os
+    
+    # Check circuit breaker first
+    if _should_skip_url(url):
+        logger.warning(f"Skipping {url} due to circuit breaker")
         return {
             "success": False,
-            "error": str(e),
+            "error": "URL skipped due to circuit breaker (too many previous failures)",
             "url": url,
-            "extracted_at": "2024-01-01T00:00:00Z"
+            "attempts": 0,
+            "extracted_at": datetime.now().isoformat(),
+            "circuit_breaker_active": True
         }
+    
+    last_error = None
+    
+    # Check if Tavily API key is configured
+    tavily_api_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_api_key or tavily_api_key == "your_tavily_api_key_here":
+        logger.error("Tavily API key not configured properly")
+        _record_url_failure(url)
+        return {
+            "success": False,
+            "error": "Tavily API key not configured - please set TAVILY_API_KEY environment variable",
+            "url": url,
+            "attempts": 0,
+            "extracted_at": datetime.now().isoformat(),
+            "configuration_error": True
+        }
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # Initialize Tavily client
+            client = TavilyClient(api_key=tavily_api_key)
+            
+            # Use Tavily Extract to get full content (requires list of URLs)
+            logger.info(f"Attempting to extract content from {url} (attempt {attempt + 1})")
+            
+            try:
+                # Use proper Tavily Extract API call with parameters
+                extract_result = client.extract(
+                    urls=[url],
+                    extract_depth="advanced",  # Better extraction quality
+                    format="markdown",         # Structured format
+                    include_images=False,      # We don't need images
+                    include_favicon=False      # We don't need favicon
+                )
+                logger.debug(f"Tavily response type: {type(extract_result)}")
+                logger.debug(f"Tavily raw response: {extract_result}")
+            except Exception as api_error:
+                # Check if error message is just "0"
+                if str(api_error).strip() == "0":
+                    logger.error(f"Tavily returned '0' error for {url} - skipping retries")
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": "Tavily returned '0' - URL may be unsupported or rate limited",
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat(),
+                        "use_fallback": True
+                    }
+                logger.error(f"Tavily API error: {api_error}")
+                raise
+            
+            # Check if we got proper response structure
+            if not isinstance(extract_result, dict):
+                error_msg = f"Invalid Tavily response format: expected dict, got {type(extract_result)}"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat(),
+                        "use_fallback": True
+                    }
+            
+            # Check for failed results first
+            failed_results = extract_result.get("failed_results", [])
+            if failed_results:
+                error_msg = f"Tavily failed to extract content: {failed_results}"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat(),
+                        "use_fallback": True
+                    }
+            
+            # Get successful results
+            results = extract_result.get("results", [])
+            if not results or len(results) == 0:
+                error_msg = "No content extracted - empty results from Tavily"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat(),
+                        "use_fallback": True
+                    }
+            
+            # Get the first result (we only passed one URL)
+            result_data = results[0]
+            
+            # Validate result structure
+            if not isinstance(result_data, dict):
+                error_msg = f"Invalid result format: expected dict, got {type(result_data)}"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat(),
+                        "use_fallback": True
+                    }
+            
+            # Check for Tavily error response
+            if isinstance(result_data, dict) and result_data.get("error"):
+                error_msg = f"Tavily API error: {result_data.get('error')}"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat()
+                    }
+            
+            raw_content = result_data.get("raw_content", "") if isinstance(result_data, dict) else str(result_data)
+            title = result_data.get("title", "") if isinstance(result_data, dict) else ""
+            
+            # Handle case where Tavily returns invalid response
+            if not isinstance(result_data, dict):
+                error_msg = f"Invalid Tavily response format: {type(result_data)}"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": "Tavily returned invalid response (possibly rate limited or unsupported URL)",
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat()
+                    }
+            
+            # Validate extracted content
+            if not raw_content or len(str(raw_content).strip()) < 100:
+                error_msg = f"Insufficient content extracted ({len(raw_content)} chars)"
+                logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _record_url_failure(url)
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat()
+                    }
+            
+            # Generate content hash for deduplication
+            content_hash = hashlib.md5(raw_content.encode()).hexdigest()
+            
+            result = {
+                "success": True,
+                "url": url,
+                "title": title,
+                "raw_content": raw_content,
+                "content_length": len(raw_content),
+                "content_hash": content_hash,
+                "extracted_at": datetime.now().isoformat(),
+                "extraction_method": "tavily_extract",
+                "attempts": attempt + 1
+            }
+            
+            # Record success for circuit breaker
+            _record_url_success(url)
+            
+            logger.info(f"Successfully extracted {len(raw_content)} characters from {url} (attempt {attempt + 1})")
+            return result
+            
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {last_error}")
+            
+            # Special handling for common errors
+            if "unauthorized" in last_error.lower() or "401" in last_error:
+                logger.error("Tavily API authentication failed - check API key")
+                _record_url_failure(url)
+                return {
+                    "success": False,
+                    "error": "Tavily API authentication failed - check TAVILY_API_KEY",
+                    "url": url,
+                    "attempts": attempt + 1,
+                    "extracted_at": datetime.now().isoformat(),
+                    "authentication_error": True
+                }
+            
+            if attempt < max_retries:
+                # Exponential backoff with jitter
+                delay = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                logger.info(f"Retrying in {delay:.1f} seconds...")
+                time.sleep(delay)
+            else:
+                _record_url_failure(url)
+                return {
+                    "success": False,
+                    "error": last_error,
+                    "url": url,
+                    "attempts": attempt + 1,
+                    "extracted_at": datetime.now().isoformat()
+                }
+    
+    # This should never be reached, but included for safety
+    _record_url_failure(url)
+    return {
+        "success": False,
+        "error": last_error or "Unknown error",
+        "url": url,
+        "attempts": max_retries + 1,
+        "extracted_at": datetime.now().isoformat()
+    }
 
 
 @tool
@@ -374,6 +660,129 @@ def chunk_and_vectorize(
         }
 
 
+@tool  
+def extract_with_fallback(url: str, max_retries: int = 2) -> Dict[str, Any]:
+    """
+    Fallback extraction method when Tavily fails.
+    Uses simple web scraping as backup.
+    
+    Args:
+        url: URL to extract content from
+        max_retries: Maximum retry attempts
+        
+    Returns:
+        Dictionary with extracted content or error information
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+    import time
+    import random
+    
+    for attempt in range(max_retries + 1):
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Metanalyst-Agent) Scientific Literature Research Bot'
+            }
+            
+            logger.info(f"Fallback extraction attempt {attempt + 1} for {url}")
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            # Parse HTML
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Remove unwanted elements
+            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+                element.decompose()
+            
+            # Extract title
+            title_elem = soup.find('title')
+            title = title_elem.get_text().strip() if title_elem else "Unknown Title"
+            
+            # Try to find main content area
+            content_selectors = [
+                'article', 'main', '.article-content', '.content', 
+                '.main-content', '#content', '.post-content'
+            ]
+            
+            content = ""
+            for selector in content_selectors:
+                content_elem = soup.select_one(selector)
+                if content_elem and len(content_elem.get_text().strip()) > 100:
+                    content = content_elem.get_text().strip()
+                    break
+            
+            # If no main content found, use body
+            if not content:
+                body = soup.find('body')
+                if body:
+                    content = body.get_text().strip()
+            
+            # Clean up content
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            content = '\n'.join(lines)
+            
+            if len(content) < 100:
+                if attempt < max_retries:
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    time.sleep(delay)
+                    continue
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Insufficient content extracted ({len(content)} chars)",
+                        "url": url,
+                        "attempts": attempt + 1,
+                        "extracted_at": datetime.now().isoformat(),
+                        "extraction_method": "fallback_scraping"
+                    }
+            
+            # Generate content hash
+            content_hash = hashlib.md5(content.encode()).hexdigest()
+            
+            result = {
+                "success": True,
+                "url": url,
+                "title": title,
+                "raw_content": content,
+                "content_length": len(content),
+                "content_hash": content_hash,
+                "extracted_at": datetime.now().isoformat(),
+                "extraction_method": "fallback_scraping",
+                "attempts": attempt + 1
+            }
+            
+            logger.info(f"Fallback extraction successful: {len(content)} characters from {url}")
+            return result
+            
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"Fallback attempt {attempt + 1} failed for {url}: {last_error}")
+            
+            if attempt < max_retries:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+            else:
+                return {
+                    "success": False,
+                    "error": last_error,
+                    "url": url,
+                    "attempts": attempt + 1,
+                    "extracted_at": datetime.now().isoformat(),
+                    "extraction_method": "fallback_scraping"
+                }
+    
+    return {
+        "success": False,
+        "error": "All fallback attempts failed",
+        "url": url,
+        "attempts": max_retries + 1,
+        "extracted_at": datetime.now().isoformat(),
+        "extraction_method": "fallback_scraping"
+    }
+
+
 @tool
 def process_article_pipeline(
     url: str,
@@ -394,43 +803,53 @@ def process_article_pipeline(
         Complete processing results including all extracted data
     """
     try:
-        # Step 1: Extract content
+        # Step 1: Extract content with fallback
         logger.info(f"Starting article processing pipeline for: {url}")
-        extraction_result = extract_article_content(url)
+        extraction_result = extract_article_content.invoke({"url": url})
         
+        # If Tavily extraction fails, try fallback method
         if not extraction_result.get("success"):
-            return {
-                "success": False,
-                "error": f"Content extraction failed: {extraction_result.get('error')}",
-                "url": url,
-                "stage_failed": "extraction"
-            }
+            logger.warning(f"Tavily extraction failed for {url}, trying fallback method")
+            extraction_result = extract_with_fallback.invoke({"url": url})
+            
+            if not extraction_result.get("success"):
+                logger.error(f"Both Tavily and fallback extraction failed for {url}")
+                return {
+                    "success": False,
+                    "error": f"All extraction methods failed: {extraction_result.get('error')}",
+                    "url": url,
+                    "stage_failed": "extraction",
+                    "tavily_error": "Primary extraction failed",
+                    "fallback_error": extraction_result.get('error')
+                }
         
         # Step 2: Extract statistical data
-        statistical_data = extract_statistical_data(
-            extraction_result["raw_content"],
-            pico,
-            extraction_result["title"]
-        )
+        statistical_data = extract_statistical_data.invoke({
+            "content": extraction_result["raw_content"],
+            "pico": pico,
+            "article_title": extraction_result["title"]
+        })
         
         # Step 3: Generate citation
-        citation = generate_vancouver_citation({
-            "title": extraction_result["title"],
-            "url": url,
-            **statistical_data
+        citation = generate_vancouver_citation.invoke({
+            "article_data": {
+                "title": extraction_result["title"],
+                "url": url,
+                **statistical_data
+            }
         })
         
         # Step 4: Chunk and vectorize
-        vectorization_result = chunk_and_vectorize(
-            extraction_result["raw_content"],
-            {
+        vectorization_result = chunk_and_vectorize.invoke({
+            "content": extraction_result["raw_content"],
+            "article_metadata": {
                 "title": extraction_result["title"],
                 "url": url,
                 "content_hash": extraction_result["content_hash"]
             },
-            chunk_size,
-            chunk_overlap
-        )
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap
+        })
         
         if not vectorization_result.get("success"):
             return {

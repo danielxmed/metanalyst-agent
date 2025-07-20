@@ -133,12 +133,24 @@ def generate_search_queries(pico: Dict[str, str]) -> List[str]:
             queries = []
             for line in lines:
                 line = line.strip()
-                if line and not line.startswith('[') and not line.startswith(']'):
-                    # Remove quotes and numbering
-                    query = line.strip('"').strip("'").strip()
+                # Skip JSON markdown, empty lines, and array brackets
+                if (line and 
+                    not line.startswith('[') and 
+                    not line.startswith(']') and
+                    not line.startswith('```') and
+                    line != '```json' and
+                    line != '```'):
+                    
+                    # Remove quotes, commas, and numbering
+                    query = line.strip('"').strip("'").strip(',').strip()
                     if query.startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.')):
                         query = query[2:].strip()
-                    if query:
+                    
+                    # Final cleanup - remove any remaining quotes
+                    query = query.strip('"').strip("'").strip()
+                    
+                    # Only add non-empty, meaningful queries
+                    if query and len(query) > 5:
                         queries.append(query)
             
             if queries:
