@@ -23,6 +23,70 @@ import numpy as np
 import requests
 from bs4 import BeautifulSoup
 
+# PostgreSQL connection for optimized storage
+from ..database.connection import get_db_connection
+
+# Circuit breaker state for tracking URL failures
+_url_failure_counts = {}
+_url_circuit_breaker = {}  # 'open', 'closed', 'half_open'
+_url_last_attempt = {}
+
+# Cache for processed URLs to avoid duplicates
+_processed_urls_cache = set()
+
+def _is_url_already_processed(url: str, meta_analysis_id: str) -> bool:
+    """Check if URL is already processed using PostgreSQL"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM articles 
+                    WHERE url = %s AND meta_analysis_id = %s 
+                    AND processing_status = 'completed'
+                """, (url, meta_analysis_id))
+                count = cursor.fetchone()[0]
+                return count > 0
+    except Exception:
+        return url in _processed_urls_cache
+
+def _mark_url_as_processed(url: str, meta_analysis_id: str, article_id: str):
+    """Mark URL as processed in PostgreSQL"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO articles (id, meta_analysis_id, url, processing_status, created_at)
+                    VALUES (%s, %s, %s, 'completed', %s)
+                    ON CONFLICT (url, meta_analysis_id) 
+                    DO UPDATE SET processing_status = 'completed', updated_at = %s
+                """, (article_id, meta_analysis_id, url, datetime.utcnow(), datetime.utcnow()))
+                conn.commit()
+        _processed_urls_cache.add(url)
+    except Exception:
+        _processed_urls_cache.add(url)
+
+def _store_article_chunks_in_db(article_id: str, chunks_data: Dict[str, Any]):
+    """Store article chunks in PostgreSQL for optimized retrieval"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                for chunk in chunks_data.get("chunks", []):
+                    cursor.execute("""
+                        INSERT INTO article_chunks (id, article_id, chunk_index, content, embedding_vector, chunk_metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, (
+                        chunk["chunk_id"],
+                        article_id,
+                        chunk["chunk_index"],
+                        chunk["content"],
+                        chunk["embedding"],
+                        json.dumps(chunk.get("metadata", {}))
+                    ))
+                conn.commit()
+    except Exception as e:
+        print(f"Warning: Could not store chunks in DB: {e}")
+
 
 # Initialize clients lazily
 def get_tavily_client():
@@ -647,39 +711,53 @@ def create_vector_store(chunks_data: List[Dict[str, Any]], store_path: str = Non
 def batch_process_articles(
     articles: List[Dict[str, Any]],
     pico: Dict[str, str],
+    meta_analysis_id: str,
     max_concurrent: int = 3
 ) -> Dict[str, Any]:
     """
     Process multiple articles in batch with concurrent processing
+    OPTIMIZED: Does not store raw content in state after vectorization
     
     Args:
         articles: List of articles to process
         pico: PICO framework for context
+        meta_analysis_id: ID of the meta-analysis for deduplication
         max_concurrent: Maximum concurrent processing
         
     Returns:
-        Batch processing results
+        Batch processing results WITHOUT raw content
     """
     
-    processed_articles = []
+    processed_urls = []  # Only store URLs and essential metadata
     failed_articles = []
-    all_chunks = []
+    all_chunks_summary = []  # Summary info only, not full chunks
     
     for article in articles:
+        article_url = article.get("url", "")
+        
+        # Skip if already processed
+        if _is_url_already_processed(article_url, meta_analysis_id):
+            processed_urls.append({
+                "url": article_url,
+                "status": "already_processed",
+                "skipped": True
+            })
+            continue
+        
         try:
             # Extract content
-            content_result = extract_article_content(article["url"])
+            content_result = extract_article_content(article_url)
             
             if not content_result.get("success"):
                 failed_articles.append({
-                    "url": article["url"],
+                    "url": article_url,
                     "error": content_result.get("error", "Unknown error")
                 })
                 continue
             
-            # Extract statistical data
+            # Extract statistical data (using content but not storing it)
             statistical_data = extract_statistical_data(
-                content_result["content"], 
+                content_result.get("content", ""), 
                 pico,
                 article.get("type", "unknown")
             )
@@ -693,18 +771,27 @@ def batch_process_articles(
             # Create chunks and embeddings
             article_id = str(uuid.uuid4())
             chunks_result = chunk_and_vectorize(
-                content_result["content"],
+                content_result.get("content", ""),
                 article_id
             )
             
+            # Store chunks in PostgreSQL for optimized retrieval
             if chunks_result.get("success"):
-                all_chunks.append(chunks_result)
+                _store_article_chunks_in_db(article_id, chunks_result)
+                all_chunks_summary.append({
+                    "article_id": article_id,
+                    "total_chunks": chunks_result.get("total_chunks", 0),
+                    "success": True
+                })
             
-            # Combine all processed data
-            processed_article = {
+            # Mark as processed in database
+            _mark_url_as_processed(article_url, meta_analysis_id, article_id)
+            
+            # Store ONLY essential data in state (NO RAW CONTENT)
+            processed_article_summary = {
                 "article_id": article_id,
-                "original_data": article,
-                "content": content_result,
+                "url": article_url,
+                "title": content_result.get("title", ""),
                 "statistical_data": statistical_data,
                 "citation": citation,
                 "metadata": metadata,
@@ -712,31 +799,138 @@ def batch_process_articles(
                     "total_chunks": chunks_result.get("total_chunks", 0),
                     "success": chunks_result.get("success", False)
                 },
-                "processed_at": datetime.now().isoformat()
+                "processed_at": datetime.now().isoformat(),
+                "content_hash": content_result.get("content_hash", ""),
+                "content_length": content_result.get("content_length", 0)
             }
             
-            processed_articles.append(processed_article)
+            processed_urls.append(processed_article_summary)
         
         except Exception as e:
             failed_articles.append({
-                "url": article.get("url", "unknown"),
+                "url": article_url,
                 "error": str(e)
             })
     
-    # Create vector store from all chunks
-    vector_store_result = create_vector_store(all_chunks) if all_chunks else None
+    # Create vector store summary (not storing full chunks in state)
+    vector_store_summary = None
+    if all_chunks_summary:
+        vector_store_summary = {
+            "total_articles_vectorized": len(all_chunks_summary),
+            "total_chunks_created": sum(c.get("total_chunks", 0) for c in all_chunks_summary),
+            "created_at": datetime.now().isoformat()
+        }
     
     return {
         "batch_summary": {
             "total_articles": len(articles),
-            "processed_successfully": len(processed_articles),
+            "processed_successfully": len(processed_urls),
             "failed": len(failed_articles),
-            "success_rate": len(processed_articles) / len(articles) if articles else 0,
-            "total_chunks_created": sum(c.get("total_chunks", 0) for c in all_chunks),
+            "success_rate": len(processed_urls) / len(articles) if articles else 0,
+            "total_chunks_created": sum(c.get("total_chunks", 0) for c in all_chunks_summary),
             "processed_at": datetime.now().isoformat()
         },
-        "processed_articles": processed_articles,
+        "processed_articles": processed_urls,  # OPTIMIZED: No raw content here
         "failed_articles": failed_articles,
-        "vector_store": vector_store_result,
+        "vector_store": vector_store_summary,  # OPTIMIZED: Summary only
         "pico_context": pico
     }
+
+@tool
+def get_processed_urls_for_analysis(meta_analysis_id: str) -> Dict[str, Any]:
+    """
+    Retrieve processed URLs from PostgreSQL for analysis without loading raw content
+    
+    Args:
+        meta_analysis_id: ID of the meta-analysis
+        
+    Returns:
+        List of processed articles metadata
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, url, title, authors, journal, publication_year, 
+                           vancouver_citation, extracted_data, quality_score
+                    FROM articles 
+                    WHERE meta_analysis_id = %s AND processing_status = 'completed'
+                    ORDER BY created_at
+                """, (meta_analysis_id,))
+                
+                articles = []
+                for row in cursor.fetchall():
+                    articles.append({
+                        "article_id": row[0],
+                        "url": row[1],
+                        "title": row[2],
+                        "authors": row[3] or [],
+                        "journal": row[4],
+                        "publication_year": row[5],
+                        "citation": row[6],
+                        "extracted_data": row[7] or {},
+                        "quality_score": row[8]
+                    })
+                
+                return {
+                    "success": True,
+                    "total_articles": len(articles),
+                    "articles": articles
+                }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "articles": []
+        }
+
+@tool
+def get_article_chunks_for_retrieval(article_ids: List[str], query: str = None) -> Dict[str, Any]:
+    """
+    Retrieve article chunks from PostgreSQL for semantic search
+    
+    Args:
+        article_ids: List of article IDs to retrieve chunks from
+        query: Optional query for filtering
+        
+    Returns:
+        Article chunks for retrieval
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                placeholders = ','.join(['%s'] * len(article_ids))
+                cursor.execute(f"""
+                    SELECT ac.id, ac.article_id, ac.chunk_index, ac.content, 
+                           ac.embedding_vector, ac.chunk_metadata,
+                           a.title, a.url
+                    FROM article_chunks ac
+                    JOIN articles a ON ac.article_id = a.id
+                    WHERE ac.article_id IN ({placeholders})
+                    ORDER BY ac.article_id, ac.chunk_index
+                """, article_ids)
+                
+                chunks = []
+                for row in cursor.fetchall():
+                    chunks.append({
+                        "chunk_id": row[0],
+                        "article_id": row[1],
+                        "chunk_index": row[2],
+                        "content": row[3],
+                        "embedding": row[4],
+                        "metadata": row[5] or {},
+                        "article_title": row[6],
+                        "article_url": row[7]
+                    })
+                
+                return {
+                    "success": True,
+                    "total_chunks": len(chunks),
+                    "chunks": chunks
+                }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "chunks": []
+        }

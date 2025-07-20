@@ -1,8 +1,11 @@
 """Research tools for literature search and relevance assessment"""
 
-import json
 import os
+import json
+import hashlib
+import uuid
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from tavily import TavilyClient
@@ -10,72 +13,227 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# PostgreSQL connection for URL deduplication
+from ..database.connection import get_db_connection
+
+# Cache for candidate URLs to avoid duplicates within session
+_candidate_urls_cache = set()
+
+def _is_url_already_candidate(url: str, meta_analysis_id: str) -> bool:
+    """Check if URL is already a candidate using PostgreSQL and cache"""
+    # Check cache first
+    if url in _candidate_urls_cache:
+        return True
+    
+    # Check database
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM articles 
+                    WHERE url = %s AND meta_analysis_id = %s
+                """, (url, meta_analysis_id))
+                count = cursor.fetchone()[0]
+                if count > 0:
+                    _candidate_urls_cache.add(url)
+                    return True
+    except Exception:
+        pass
+    
+    return False
+
+def _add_url_to_candidates(url: str, meta_analysis_id: str, metadata: Dict[str, Any]):
+    """Add URL to candidates in PostgreSQL"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                article_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO articles (id, meta_analysis_id, url, title, processing_status, created_at)
+                    VALUES (%s, %s, %s, %s, 'pending', %s)
+                    ON CONFLICT (url, meta_analysis_id) DO NOTHING
+                """, (
+                    article_id, 
+                    meta_analysis_id, 
+                    url, 
+                    metadata.get('title', ''), 
+                    datetime.utcnow()
+                ))
+                conn.commit()
+        _candidate_urls_cache.add(url)
+    except Exception:
+        _candidate_urls_cache.add(url)
+
 
 @tool
 def search_literature(
-    query: str,
-    max_results: int = 20,
-    domains: Optional[List[str]] = None
-) -> List[Dict[str, Any]]:
+    query: str, 
+    domains: List[str] = None,
+    meta_analysis_id: str = None,
+    max_results: int = 10,
+    include_raw_content: bool = False
+) -> Dict[str, Any]:
     """
-    Search scientific literature using Tavily API with medical domain focus
+    Search for scientific literature using Tavily API with deduplication
+    OPTIMIZED: Avoids storing duplicate URLs and raw content
     
     Args:
-        query: Search query for scientific literature
+        query: Search query string
+        domains: Optional list of domains to search within
+        meta_analysis_id: ID for deduplication across searches
         max_results: Maximum number of results to return
-        domains: Specific domains to search (defaults to medical databases)
+        include_raw_content: Whether to include raw content (should be False for optimization)
         
     Returns:
-        List of articles with title, URL, snippet, and relevance score
+        Dictionary with search results and metadata (NO raw content)
     """
     try:
-        # Initialize Tavily client (API key should be in environment)
+        # Initialize Tavily client
         api_key = os.getenv("TAVILY_API_KEY")
         if not api_key:
-            raise ValueError("TAVILY_API_KEY environment variable is required")
+            return {
+                "success": False,
+                "error": "TAVILY_API_KEY not found in environment variables",
+                "results": []
+            }
+        
         client = TavilyClient(api_key=api_key)
         
-        # Default to medical literature domains
+        # Perform search
+        search_params = {
+            "query": query,
+            "max_results": max_results * 2,  # Get more to account for duplicates
+            "include_raw_content": include_raw_content,  # Should be False
+            "include_domains": domains if domains else []
+        }
+        
+        # Add scientific domains if none specified
         if not domains:
-            domains = [
+            search_params["include_domains"] = [
                 "pubmed.ncbi.nlm.nih.gov",
-                "cochranelibrary.com", 
-                "clinicaltrials.gov",
+                "scholar.google.com", 
+                "cochranelibrary.com",
                 "bmj.com",
-                "thelancet.com",
                 "nejm.org",
-                "jama.jamanetwork.com"
+                "thelancet.com",
+                "nature.com",
+                "science.org",
+                "jamanetwork.com",
+                "europepmc.org"
             ]
         
-        # Perform search with medical focus
-        results = client.search(
-            query=query,
-            max_results=max_results,
-            search_depth="advanced",
-            include_domains=domains,
-            include_answer=False,  # We want raw results
-            include_raw_content=False  # Just metadata for now
-        )
+        response = client.search(**search_params)
         
-        # Structure results for downstream processing
-        structured_results = []
-        for i, result in enumerate(results.get("results", [])):
-            structured_results.append({
-                "rank": i + 1,
-                "title": result.get("title", ""),
-                "url": result.get("url", ""),
-                "snippet": result.get("content", ""),
-                "score": result.get("score", 0.0),
-                "source_domain": extract_domain(result.get("url", "")),
-                "published_date": result.get("published_date"),
-            })
+        if not response or 'results' not in response:
+            return {
+                "success": False,
+                "error": "No results returned from Tavily API",
+                "results": []
+            }
         
-        logger.info(f"Found {len(structured_results)} articles for query: {query[:50]}...")
-        return structured_results
+        # Filter out duplicate URLs and process results
+        unique_results = []
+        processed_urls = set()
+        
+        for result in response['results']:
+            url = result.get('url', '')
+            
+            # Skip if URL is empty or already processed in this search
+            if not url or url in processed_urls:
+                continue
+                
+            # Skip if URL is already a candidate for this meta-analysis
+            if meta_analysis_id and _is_url_already_candidate(url, meta_analysis_id):
+                continue
+            
+            processed_urls.add(url)
+            
+            # Create optimized result (NO raw content)
+            optimized_result = {
+                "url": url,
+                "title": result.get('title', ''),
+                "snippet": result.get('content', '')[:500],  # Limit snippet size
+                "score": result.get('score', 0.0),
+                "published_date": result.get('published_date', ''),
+                "domain": result.get('url', '').split('/')[2] if '/' in result.get('url', '') else ''
+            }
+            
+            # Add to candidates if meta_analysis_id provided
+            if meta_analysis_id:
+                _add_url_to_candidates(url, meta_analysis_id, optimized_result)
+            
+            unique_results.append(optimized_result)
+            
+            # Stop when we have enough unique results
+            if len(unique_results) >= max_results:
+                break
+        
+        return {
+            "success": True,
+            "query": query,
+            "total_found": len(response.get('results', [])),
+            "unique_results": len(unique_results),
+            "results": unique_results,
+            "search_metadata": {
+                "domains_searched": search_params.get("include_domains", []),
+                "duplicates_filtered": len(response.get('results', [])) - len(unique_results),
+                "searched_at": datetime.now().isoformat()
+            }
+        }
         
     except Exception as e:
-        logger.error(f"Error searching literature: {str(e)}")
-        return []
+        return {
+            "success": False,
+            "error": f"Search failed: {str(e)}",
+            "results": []
+        }
+
+@tool
+def get_candidate_urls_summary(meta_analysis_id: str) -> Dict[str, Any]:
+    """
+    Get summary of candidate URLs without loading full content
+    
+    Args:
+        meta_analysis_id: ID of the meta-analysis
+        
+    Returns:
+        Summary of candidate URLs
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT url, title, processing_status, created_at
+                    FROM articles 
+                    WHERE meta_analysis_id = %s
+                    ORDER BY created_at DESC
+                """, (meta_analysis_id,))
+                
+                candidates = []
+                status_counts = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
+                
+                for row in cursor.fetchall():
+                    url, title, status, created_at = row
+                    candidates.append({
+                        "url": url,
+                        "title": title,
+                        "status": status,
+                        "added_at": created_at.isoformat() if created_at else None
+                    })
+                    status_counts[status] = status_counts.get(status, 0) + 1
+                
+                return {
+                    "success": True,
+                    "total_candidates": len(candidates),
+                    "status_summary": status_counts,
+                    "candidates": candidates
+                }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "candidates": []
+        }
 
 
 @tool
