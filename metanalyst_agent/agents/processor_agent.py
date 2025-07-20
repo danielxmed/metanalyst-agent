@@ -133,7 +133,9 @@ def create_processor_agent():
         name="processor",
         system_prompt=system_prompt,
         tools=processor_tools,
+        prompt=system_prompt,
         model=llm
+
     )
     
     return processor_agent

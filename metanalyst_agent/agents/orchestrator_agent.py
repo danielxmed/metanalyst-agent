@@ -42,6 +42,42 @@ def create_orchestrator_agent():
     # Initialize LLM
     llm = ChatOpenAI(**settings.get_openai_config())
     
+    # Create handoff tools for each agent
+    transfer_to_researcher = create_handoff_tool(
+        agent_name="researcher",
+        description="Transfer control to the research agent for literature search and article collection"
+    )
+    
+    transfer_to_processor = create_handoff_tool(
+        agent_name="processor", 
+        description="Transfer control to the processor agent for data extraction and quality assessment"
+    )
+    
+    transfer_to_retriever = create_handoff_tool(
+        agent_name="retriever",
+        description="Transfer control to the retriever agent for accessing stored information"
+    )
+    
+    transfer_to_analyst = create_handoff_tool(
+        agent_name="analyst",
+        description="Transfer control to the analyst agent for statistical analysis and meta-analysis calculations"
+    )
+    
+    transfer_to_writer = create_handoff_tool(
+        agent_name="writer",
+        description="Transfer control to the writer agent for generating meta-analysis reports"
+    )
+    
+    transfer_to_reviewer = create_handoff_tool(
+        agent_name="reviewer", 
+        description="Transfer control to the reviewer agent for quality checks and validation"
+    )
+    
+    transfer_to_editor = create_handoff_tool(
+        agent_name="editor",
+        description="Transfer control to the editor agent for final report editing and formatting"
+    )
+    
     # Orchestrator tools - all handoff tools for agent coordination
     orchestrator_tools = [
         transfer_to_researcher,
@@ -112,7 +148,9 @@ def create_orchestrator_agent():
         name="orchestrator",
         system_prompt=system_prompt,
         tools=orchestrator_tools,
+        prompt=system_prompt,
         model=llm
+
     )
     
     return orchestrator

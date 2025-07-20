@@ -12,12 +12,14 @@ from ..tools.research_tools import (
     search_literature,
     generate_search_queries,
     assess_article_relevance,
+
 )
 from ..tools.handoff_tools import (
     transfer_to_processor,
     transfer_to_analyst,
     request_supervisor_intervention,
     signal_completion,
+
 )
 
 
@@ -39,6 +41,22 @@ def create_research_agent():
     # Initialize LLM
     llm = ChatOpenAI(**settings.get_openai_config())
     
+    # Create handoff tools
+    transfer_to_processor = create_handoff_tool(
+        agent_name="processor",
+        description="Transfer control to processor agent for data extraction and quality assessment"
+    )
+    
+    transfer_to_analyst = create_handoff_tool(
+        agent_name="analyst", 
+        description="Transfer control to analyst agent for statistical analysis"
+    )
+    
+    transfer_to_orchestrator = create_handoff_tool(
+        agent_name="orchestrator",
+        description="Transfer control back to orchestrator for coordination"
+    )
+    
     # Research agent tools
     research_tools = [
         search_literature,
@@ -47,8 +65,10 @@ def create_research_agent():
         # Handoff tools
         transfer_to_processor,
         transfer_to_analyst,
+        transfer_to_orchestrator,
         request_supervisor_intervention,
         signal_completion,
+
     ]
     
     # System prompt for research agent
@@ -114,7 +134,9 @@ def create_research_agent():
         name="researcher",
         system_prompt=system_prompt,
         tools=research_tools,
+        prompt=system_prompt,
         model=llm
+
     )
     
     return research_agent

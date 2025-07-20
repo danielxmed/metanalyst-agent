@@ -83,6 +83,28 @@ class MetanalystAgent:
         print(f"📊 Storage: {storage_type}")
         print(f"🧠 Model: {settings.openai_model}")
     
+    def create_initial_state(
+        self,
+        research_question: str,
+        config: Optional[Dict[str, Any]] = None
+    ) -> MetaAnalysisState:
+        """
+        Create initial state for meta-analysis.
+        
+        Args:
+            research_question: The research question for the meta-analysis
+            config: Additional configuration parameters
+        
+        Returns:
+            Initial state dictionary
+        """
+        return create_initial_state(
+            research_question=research_question,
+            meta_analysis_id=str(uuid.uuid4()),
+            thread_id=str(uuid.uuid4()),
+            config=config or {}
+        )
+    
     @property
     def orchestrator_agent(self):
         """Lazy loading for orchestrator agent"""
@@ -470,6 +492,7 @@ class MetanalystAgent:
         from .agents.orchestrator_agent import generate_pico_from_query
         
         # Generate PICO framework from query
+        from .agents.orchestrator_agent import generate_pico_from_query
         pico = generate_pico_from_query(query)
         print(f"📋 PICO Framework:")
         print(f"   Population: {pico['P']}")
@@ -478,27 +501,16 @@ class MetanalystAgent:
         print(f"   Outcome: {pico['O']}")
         
         # Create initial state
-        meta_analysis_id = str(uuid.uuid4())
-        thread_id = f"thread_{meta_analysis_id[:8]}"
-        
-        config = {
-            "max_articles": max_articles,
-            "quality_threshold": quality_threshold,
-            "quality_thresholds": {
-                "researcher": quality_threshold,
-                "processor": quality_threshold,
-                "analyst": quality_threshold,
-                "writer": quality_threshold,
-                "reviewer": quality_threshold * 1.1,  # Higher standard for review
-            },
-            **kwargs
-        }
-        
+
         initial_state = create_initial_state(
             research_question=query,
-            meta_analysis_id=meta_analysis_id,
-            thread_id=thread_id,
-            config=config
+            meta_analysis_id=str(uuid.uuid4()),
+            thread_id=str(uuid.uuid4()),
+            config={
+                "max_articles": max_articles,
+                "quality_threshold": quality_threshold,
+                **kwargs
+            }
         )
         
         # Update with generated PICO
@@ -600,29 +612,18 @@ class MetanalystAgent:
         from .agents.orchestrator_agent import generate_pico_from_query
         
         # Generate PICO and create initial state
+        from .agents.orchestrator_agent import generate_pico_from_query
         pico = generate_pico_from_query(query)
-        
-        meta_analysis_id = str(uuid.uuid4())
-        thread_id = f"thread_{meta_analysis_id[:8]}"
-        
-        config = {
-            "max_articles": max_articles,
-            "quality_threshold": quality_threshold,
-            "quality_thresholds": {
-                "researcher": quality_threshold,
-                "processor": quality_threshold,
-                "analyst": quality_threshold,
-                "writer": quality_threshold,
-                "reviewer": quality_threshold * 1.1,
-            },
-            **kwargs
-        }
-        
         initial_state = create_initial_state(
             research_question=query,
-            meta_analysis_id=meta_analysis_id,
-            thread_id=thread_id,
-            config=config
+            meta_analysis_id=str(uuid.uuid4()),
+            thread_id=str(uuid.uuid4()),
+            config={
+                "max_articles": max_articles,
+                "quality_threshold": quality_threshold,
+                **kwargs
+            }
+
         )
         initial_state.update({
             "pico": pico,
