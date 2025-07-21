@@ -37,72 +37,26 @@ def validate_uuid_format(uuid_string: str) -> bool:
 def ensure_valid_uuid(meta_analysis_id: str, operation: str = "operation") -> str:
     """
     Garante que um meta_analysis_id seja um UUID válido.
-    Se inválido, busca a meta-análise mais recente ativa no banco.
+    Se inválido, gera um novo UUID e registra um warning.
     
     Args:
         meta_analysis_id: ID para validar
         operation: Nome da operação para logs
         
     Returns:
-        UUID válido existente no banco
+        UUID válido (original ou novo gerado)
     """
     if validate_uuid_format(meta_analysis_id):
-        # Verificar se existe no banco
-        try:
-            from ..database.connection import get_database_manager
-            with get_database_manager().get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) as count FROM meta_analyses WHERE id = %s", (meta_analysis_id,))
-                    result = cursor.fetchone()
-                    if result['count'] > 0:
-                        return meta_analysis_id
-        except Exception as e:
-            logger.error(f"Error checking meta_analysis_id in database: {e}")
+        return meta_analysis_id
     
-    # Se ID inválido ou não existe, buscar meta-análise ativa mais recente
-    logger.warning(f"Invalid/non-existent UUID in {operation}: '{meta_analysis_id}'. Searching for recent active meta-analysis.")
+    # Gerar novo UUID válido
+    new_uuid = str(uuid.uuid4())
+    logger.warning(
+        f"Invalid UUID format detected in {operation}: '{meta_analysis_id}'. "
+        f"Generated new UUID: {new_uuid}"
+    )
     
-    try:
-        from ..database.connection import get_database_manager
-        with get_database_manager().get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id FROM meta_analyses 
-                    WHERE status = 'active' 
-                    ORDER BY created_at DESC 
-                    LIMIT 1
-                """)
-                result = cursor.fetchone()
-                if result:
-                    recent_id = str(result['id'])
-                    logger.info(f"Using recent active meta-analysis: {recent_id}")
-                    return recent_id
-    except Exception as e:
-        logger.error(f"Error finding recent meta-analysis: {e}")
-    
-    # Como último recurso, criar uma nova meta-análise
-    try:
-        from ..database.connection import get_database_manager
-        new_id = str(uuid.uuid4())
-        thread_id = f"thread_{new_id}"
-        
-        with get_database_manager().get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO meta_analyses (id, thread_id, title, pico, status, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    new_id, thread_id, f"Auto-created for {operation}",
-                    json.dumps({"P": "Not specified", "I": "Not specified", "C": "Not specified", "O": "Not specified"}),
-                    "active", datetime.utcnow(), datetime.utcnow()
-                ))
-                conn.commit()
-        
-        logger.warning(f"Created new meta-analysis as fallback: {new_id}")
-        return new_id
-    except Exception as e:
-        logger.error(f"Failed to create fallback meta-analysis: {e}")
-        raise ValueError(f"Cannot resolve valid meta_analysis_id for {operation}")
+    return new_uuid
 
 # PostgreSQL connection for URL deduplication
 from ..database.connection import get_database_manager
@@ -121,11 +75,11 @@ def _is_url_already_candidate(url: str, meta_analysis_id: str) -> bool:
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT COUNT(*) as count FROM articles 
+                    SELECT COUNT(*) FROM articles 
                     WHERE url = %s AND meta_analysis_id = %s
                 """, (url, meta_analysis_id))
-                result = cursor.fetchone()
-                if result['count'] > 0:
+                count = cursor.fetchone()[0]
+                if count > 0:
                     _candidate_urls_cache.add(url)
                     return True
     except Exception:
@@ -136,28 +90,23 @@ def _is_url_already_candidate(url: str, meta_analysis_id: str) -> bool:
 def _add_url_to_candidates(url: str, meta_analysis_id: str, metadata: Dict[str, Any]):
     """Add URL to candidates in PostgreSQL"""
     try:
-        # Validar meta_analysis_id antes de inserir
-        valid_id = ensure_valid_uuid(meta_analysis_id, "_add_url_to_candidates")
-        
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 article_id = str(uuid.uuid4())
                 cursor.execute("""
                     INSERT INTO articles (id, meta_analysis_id, url, title, processing_status, created_at)
                     VALUES (%s, %s, %s, %s, 'pending', %s)
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT (url, meta_analysis_id) DO NOTHING
                 """, (
                     article_id, 
-                    valid_id,  # Usar ID validado
+                    meta_analysis_id, 
                     url, 
                     metadata.get('title', ''), 
                     datetime.utcnow()
                 ))
                 conn.commit()
         _candidate_urls_cache.add(url)
-        logger.info(f"Added URL to candidates with meta_analysis_id: {valid_id}")
-    except Exception as e:
-        logger.error(f"Error adding URL to candidates: {e}")
+    except Exception:
         _candidate_urls_cache.add(url)
 
 
@@ -288,33 +237,16 @@ def search_literature(
         }
 
 @tool
-def get_candidate_urls_summary(state: Dict[str, Any] = None, meta_analysis_id: str = None) -> Dict[str, Any]:
+def get_candidate_urls_summary(meta_analysis_id: str) -> Dict[str, Any]:
     """
     Get summary of candidate URLs without loading full content
     
     Args:
-        state: State containing meta_analysis_id
-        meta_analysis_id: Direct ID of the meta-analysis
+        meta_analysis_id: ID of the meta-analysis
         
     Returns:
         Summary of candidate URLs
     """
-    # Extrair meta_analysis_id do state se não fornecido diretamente
-    if not meta_analysis_id and state:
-        for key in ['meta_analysis_id', 'id', 'analysis_id']:
-            if key in state and state[key]:
-                meta_analysis_id = str(state[key])
-                break
-    
-    if not meta_analysis_id:
-        return {
-            "success": False,
-            "error": "No meta_analysis_id provided",
-            "candidates": []
-        }
-    
-    # Validar o ID
-    meta_analysis_id = ensure_valid_uuid(meta_analysis_id, "get_candidate_urls_summary")
     try:
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -329,13 +261,14 @@ def get_candidate_urls_summary(state: Dict[str, Any] = None, meta_analysis_id: s
                 status_counts = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
                 
                 for row in cursor.fetchall():
+                    url, title, status, created_at = row
                     candidates.append({
-                        "url": row['url'],
-                        "title": row['title'],
-                        "status": row['processing_status'],
-                        "added_at": row['created_at'].isoformat() if row['created_at'] else None
+                        "url": url,
+                        "title": title,
+                        "status": status,
+                        "added_at": created_at.isoformat() if created_at else None
                     })
-                    status_counts[row['processing_status']] = status_counts.get(row['processing_status'], 0) + 1
+                    status_counts[status] = status_counts.get(status, 0) + 1
                 
                 return {
                     "success": True,

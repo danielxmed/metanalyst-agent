@@ -1,4 +1,45 @@
-"""Research tools for literature search and relevance assessment"""
+#!/usr/bin/env python3
+"""
+CORREÇÃO DEFINITIVA DO PROBLEMA DE UUID NO BANCO DE DADOS
+=======================================================
+
+Este script corrige o problema onde meta_analysis_id inválidos são 
+passados para o sistema, causando falha de integridade referencial.
+
+Problema identificado:
+- Sistema recebe meta_analysis_id='Amiodarone_vs_BB_AF' (não é UUID)
+- ensure_valid_uuid() gera UUID aleatório que não existe no banco
+- Inserções falham com foreign key constraint
+
+Correção:
+1. Melhorar ensure_valid_uuid para buscar ID correto no estado
+2. Criar função para validar meta_analysis_id existe no banco
+3. Adicionar fallbacks robustos
+"""
+
+import os
+import sys
+import uuid
+from datetime import datetime
+
+# Adicionar o diretório do projeto ao Python path
+sys.path.insert(0, '/Users/danielnobregamedeiros/Desktop/metanalyst-agent')
+
+def fix_research_tools():
+    """Corrigir research_tools.py com validação robusta de UUID"""
+    
+    print("🔧 CORRIGINDO RESEARCH_TOOLS.PY")
+    print("=" * 50)
+    
+    research_tools_path = "metanalyst_agent/tools/research_tools.py"
+    
+    # Fazer backup
+    backup_path = f"{research_tools_path}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    os.system(f"cp {research_tools_path} {backup_path}")
+    print(f"✅ Backup criado: {backup_path}")
+    
+    # Nova versão corrigida
+    corrected_code = '''"""Research tools for literature search and relevance assessment"""
 
 import os
 import json
@@ -13,6 +54,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Cache global para manter meta_analysis_id consistente
+_global_meta_analysis_cache = {}
+
+def get_cached_meta_analysis_id(key: str = "current") -> Optional[str]:
+    """Recupera meta_analysis_id do cache global"""
+    return _global_meta_analysis_cache.get(key)
+
+def set_cached_meta_analysis_id(meta_analysis_id: str, key: str = "current") -> None:
+    """Define meta_analysis_id no cache global"""
+    if validate_uuid_format(meta_analysis_id):
+        _global_meta_analysis_cache[key] = meta_analysis_id
+        logger.info(f"Meta-analysis ID cached: {meta_analysis_id}")
 
 def validate_uuid_format(uuid_string: str) -> bool:
     """
@@ -33,37 +86,85 @@ def validate_uuid_format(uuid_string: str) -> bool:
     except (ValueError, TypeError):
         return False
 
-
-def ensure_valid_uuid(meta_analysis_id: str, operation: str = "operation") -> str:
+def validate_meta_analysis_exists(meta_analysis_id: str) -> bool:
     """
-    Garante que um meta_analysis_id seja um UUID válido.
-    Se inválido, busca a meta-análise mais recente ativa no banco.
+    Verifica se meta_analysis_id existe no banco de dados.
+    
+    Args:
+        meta_analysis_id: UUID para verificar
+        
+    Returns:
+        True se existe, False caso contrário
+    """
+    if not validate_uuid_format(meta_analysis_id):
+        return False
+    
+    try:
+        from ..database.connection import get_database_manager
+        
+        with get_database_manager().get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM meta_analyses WHERE id = %s",
+                    (meta_analysis_id,)
+                )
+                count = cursor.fetchone()[0]
+                return count > 0
+                
+    except Exception as e:
+        logger.error(f"Erro verificando meta_analysis_id no banco: {e}")
+        return False
+
+def ensure_valid_meta_analysis_id(
+    meta_analysis_id: str, 
+    operation: str = "operation",
+    state: Dict[str, Any] = None
+) -> Optional[str]:
+    """
+    Garante que um meta_analysis_id seja válido e exista no banco.
+    
+    Estratégia de recuperação:
+    1. Se o ID é válido e existe no banco, usar esse ID
+    2. Buscar no cache global
+    3. Buscar no estado fornecido
+    4. Buscar meta-análise mais recente no banco
+    5. Como último recurso, criar nova meta-análise
     
     Args:
         meta_analysis_id: ID para validar
         operation: Nome da operação para logs
+        state: Estado atual do sistema para busca de fallback
         
     Returns:
-        UUID válido existente no banco
+        UUID válido e existente no banco, ou None se falhou
     """
-    if validate_uuid_format(meta_analysis_id):
-        # Verificar se existe no banco
-        try:
-            from ..database.connection import get_database_manager
-            with get_database_manager().get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) as count FROM meta_analyses WHERE id = %s", (meta_analysis_id,))
-                    result = cursor.fetchone()
-                    if result['count'] > 0:
-                        return meta_analysis_id
-        except Exception as e:
-            logger.error(f"Error checking meta_analysis_id in database: {e}")
+    # 1. Verificar se o ID fornecido é válido e existe
+    if validate_uuid_format(meta_analysis_id) and validate_meta_analysis_exists(meta_analysis_id):
+        set_cached_meta_analysis_id(meta_analysis_id)
+        return meta_analysis_id
     
-    # Se ID inválido ou não existe, buscar meta-análise ativa mais recente
-    logger.warning(f"Invalid/non-existent UUID in {operation}: '{meta_analysis_id}'. Searching for recent active meta-analysis.")
+    logger.warning(f"Invalid meta_analysis_id in {operation}: '{meta_analysis_id}'")
     
+    # 2. Buscar no cache global
+    cached_id = get_cached_meta_analysis_id()
+    if cached_id and validate_meta_analysis_exists(cached_id):
+        logger.info(f"Using cached meta_analysis_id: {cached_id}")
+        return cached_id
+    
+    # 3. Buscar no estado
+    if state:
+        for key in ['meta_analysis_id', 'id', 'analysis_id']:
+            if key in state:
+                candidate_id = str(state[key])
+                if validate_uuid_format(candidate_id) and validate_meta_analysis_exists(candidate_id):
+                    logger.info(f"Found valid meta_analysis_id in state[{key}]: {candidate_id}")
+                    set_cached_meta_analysis_id(candidate_id)
+                    return candidate_id
+    
+    # 4. Buscar meta-análise mais recente
     try:
         from ..database.connection import get_database_manager
+        
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
@@ -74,35 +175,48 @@ def ensure_valid_uuid(meta_analysis_id: str, operation: str = "operation") -> st
                 """)
                 result = cursor.fetchone()
                 if result:
-                    recent_id = str(result['id'])
-                    logger.info(f"Using recent active meta-analysis: {recent_id}")
+                    recent_id = str(result[0])
+                    logger.info(f"Using most recent active meta-analysis: {recent_id}")
+                    set_cached_meta_analysis_id(recent_id)
                     return recent_id
+                    
     except Exception as e:
-        logger.error(f"Error finding recent meta-analysis: {e}")
+        logger.error(f"Erro buscando meta-análise recente: {e}")
     
-    # Como último recurso, criar uma nova meta-análise
+    # 5. Criar nova meta-análise como último recurso
     try:
         from ..database.connection import get_database_manager
+        
         new_id = str(uuid.uuid4())
         thread_id = f"thread_{new_id}"
         
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    INSERT INTO meta_analyses (id, thread_id, title, pico, status, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO meta_analyses (
+                        id, thread_id, title, pico, status, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
-                    new_id, thread_id, f"Auto-created for {operation}",
+                    new_id,
+                    thread_id,
+                    f"Auto-created for {operation}",
                     json.dumps({"P": "Not specified", "I": "Not specified", "C": "Not specified", "O": "Not specified"}),
-                    "active", datetime.utcnow(), datetime.utcnow()
+                    "active",
+                    datetime.utcnow(),
+                    datetime.utcnow()
                 ))
                 conn.commit()
         
         logger.warning(f"Created new meta-analysis as fallback: {new_id}")
+        set_cached_meta_analysis_id(new_id)
         return new_id
+        
     except Exception as e:
-        logger.error(f"Failed to create fallback meta-analysis: {e}")
-        raise ValueError(f"Cannot resolve valid meta_analysis_id for {operation}")
+        logger.error(f"Erro criando meta-análise de fallback: {e}")
+    
+    # Se tudo falhou
+    logger.error(f"Failed to ensure valid meta_analysis_id for {operation}")
+    return None
 
 # PostgreSQL connection for URL deduplication
 from ..database.connection import get_database_manager
@@ -118,27 +232,30 @@ def _is_url_already_candidate(url: str, meta_analysis_id: str) -> bool:
     
     # Check database
     try:
+        cursor_query = """SELECT COUNT(*) FROM articles WHERE url = %s AND meta_analysis_id = %s"""
+        
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT COUNT(*) as count FROM articles 
-                    WHERE url = %s AND meta_analysis_id = %s
-                """, (url, meta_analysis_id))
-                result = cursor.fetchone()
-                if result['count'] > 0:
+                cursor.execute(cursor_query, (url, meta_analysis_id))
+                count = cursor.fetchone()[0]
+                if count > 0:
                     _candidate_urls_cache.add(url)
                     return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Unexpected database error: {e}")
+        logger.error(f"Failed to check URL in database: {e}")
     
     return False
 
-def _add_url_to_candidates(url: str, meta_analysis_id: str, metadata: Dict[str, Any]):
-    """Add URL to candidates in PostgreSQL"""
+def _add_url_to_candidates(url: str, meta_analysis_id: str, metadata: Dict[str, Any], state: Dict[str, Any] = None):
+    """Add URL to candidates in PostgreSQL with proper error handling"""
     try:
         # Validar meta_analysis_id antes de inserir
-        valid_id = ensure_valid_uuid(meta_analysis_id, "_add_url_to_candidates")
-        
+        valid_id = ensure_valid_meta_analysis_id(meta_analysis_id, "_add_url_to_candidates", state)
+        if not valid_id:
+            logger.error(f"Cannot add URL: invalid meta_analysis_id {meta_analysis_id}")
+            return
+            
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 article_id = str(uuid.uuid4())
@@ -155,7 +272,8 @@ def _add_url_to_candidates(url: str, meta_analysis_id: str, metadata: Dict[str, 
                 ))
                 conn.commit()
         _candidate_urls_cache.add(url)
-        logger.info(f"Added URL to candidates with meta_analysis_id: {valid_id}")
+        logger.info(f"Added URL to candidates: {url}")
+        
     except Exception as e:
         logger.error(f"Error adding URL to candidates: {e}")
         _candidate_urls_cache.add(url)
@@ -186,7 +304,17 @@ def search_literature(
     try:
         # Validate and fix meta_analysis_id if provided
         if meta_analysis_id:
-            meta_analysis_id = ensure_valid_uuid(meta_analysis_id, "search_literature")
+            meta_analysis_id = ensure_valid_meta_analysis_id(
+                meta_analysis_id, 
+                "search_literature"
+            )
+            if not meta_analysis_id:
+                return {
+                    "success": False,
+                    "error": "Could not resolve valid meta_analysis_id",
+                    "results": []
+                }
+        
         # Initialize Tavily client
         api_key = os.getenv("TAVILY_API_KEY")
         if not api_key:
@@ -276,11 +404,13 @@ def search_literature(
             "search_metadata": {
                 "domains_searched": search_params.get("include_domains", []),
                 "duplicates_filtered": len(response.get('results', [])) - len(unique_results),
-                "searched_at": datetime.now().isoformat()
+                "searched_at": datetime.now().isoformat(),
+                "meta_analysis_id": meta_analysis_id
             }
         }
         
     except Exception as e:
+        logger.error(f"Search literature error: {e}")
         return {
             "success": False,
             "error": f"Search failed: {str(e)}",
@@ -288,34 +418,41 @@ def search_literature(
         }
 
 @tool
-def get_candidate_urls_summary(state: Dict[str, Any] = None, meta_analysis_id: str = None) -> Dict[str, Any]:
+def get_candidate_urls_summary(state: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Get summary of candidate URLs without loading full content
     
     Args:
         state: State containing meta_analysis_id
-        meta_analysis_id: Direct ID of the meta-analysis
         
     Returns:
         Summary of candidate URLs
     """
-    # Extrair meta_analysis_id do state se não fornecido diretamente
-    if not meta_analysis_id and state:
-        for key in ['meta_analysis_id', 'id', 'analysis_id']:
-            if key in state and state[key]:
-                meta_analysis_id = str(state[key])
-                break
-    
-    if not meta_analysis_id:
-        return {
-            "success": False,
-            "error": "No meta_analysis_id provided",
-            "candidates": []
-        }
-    
-    # Validar o ID
-    meta_analysis_id = ensure_valid_uuid(meta_analysis_id, "get_candidate_urls_summary")
     try:
+        # Extrair meta_analysis_id do estado
+        meta_analysis_id = None
+        if state:
+            # Tentar diferentes chaves possíveis
+            for key in ['meta_analysis_id', 'id', 'analysis_id']:
+                if key in state and state[key]:
+                    meta_analysis_id = str(state[key])
+                    break
+        
+        # Validar o ID encontrado
+        if meta_analysis_id:
+            meta_analysis_id = ensure_valid_meta_analysis_id(
+                meta_analysis_id, 
+                "get_candidate_urls_summary",
+                state
+            )
+        
+        if not meta_analysis_id:
+            return {
+                "success": False,
+                "error": "No state provided to get_candidate_urls_summary",
+                "candidates": []
+            }
+        
         with get_database_manager().get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
@@ -341,9 +478,12 @@ def get_candidate_urls_summary(state: Dict[str, Any] = None, meta_analysis_id: s
                     "success": True,
                     "total_candidates": len(candidates),
                     "status_summary": status_counts,
-                    "candidates": candidates
+                    "candidates": candidates,
+                    "meta_analysis_id": meta_analysis_id
                 }
+                
     except Exception as e:
+        logger.error(f"Error getting candidate URLs summary: {e}")
         return {
             "success": False,
             "error": str(e),
@@ -403,7 +543,7 @@ def generate_search_queries(pico: Dict[str, str]) -> List[str]:
                 return queries
         except json.JSONDecodeError:
             # Fallback: extract queries from text response
-            lines = response.content.strip().split('\n')
+            lines = response.content.strip().split('\\n')
             queries = []
             for line in lines:
                 line = line.strip()
@@ -528,7 +668,7 @@ def assess_article_relevance(
             assessment.update({
                 "article_url": article.get("url", ""),
                 "article_title": article.get("title", ""),
-                "assessed_at": "2024-01-01T00:00:00Z",  # Would use datetime.now() in real implementation
+                "assessed_at": datetime.now().isoformat(),
             })
             
             logger.info(f"Assessed article relevance: {assessment.get('relevance_score', 0)}/100")
@@ -564,3 +704,38 @@ def extract_domain(url: str) -> str:
         return domain
     except:
         return "unknown"
+'''
+    
+    with open(research_tools_path, 'w', encoding='utf-8') as f:
+        f.write(corrected_code)
+    
+    print("✅ research_tools.py corrigido!")
+
+def fix_main_py():
+    """Inicializar cache global no main.py"""
+    
+    print("\n🔧 CORRIGINDO MAIN.PY PARA INICIALIZAR CACHE")
+    print("=" * 50)
+    
+    main_path = "metanalyst_agent/main.py"
+    
+    # Ler conteúdo atual
+    with open(main_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Adicionar importação e inicialização do cache
+    if "set_cached_meta_analysis_id" not in content:
+        # Encontrar local para adicionar import
+        import_lines = []
+        other_lines = []
+        in_imports = True
+        
+        for line in content.split('\n'):
+            if in_imports and (line.startswith('import ') or line.startswith('from ') or line.strip() == '' or line.startswith('#')):
+                import_lines.append(line)
+            else:
+                in_imports = False
+                other_lines.append(line)
+        
+        # Adicionar import para o cache
+        import_lines.append("from metanalyst_agent.tools.research_tools import set
